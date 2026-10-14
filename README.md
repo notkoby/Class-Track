@@ -16,6 +16,8 @@ Class Track is a simple yet detailed app for Android to track your college class
 
 ### Best of all, Class Track is completely free. No ads, no microtransactions.
 
+Class Track's app file is designed to be lightweight and to run smoothly. You can view the virustotal scan here: https://www.virustotal.com/gui/file/c09e4024bb34be8a8ce1434dd39c951d93a2ae61e1e90b0f6840e1178656373f/detection.
+
 Note: This app has not been tested for every device's form factor and has only been tested on Android 16. Some parts of the app may not work on different devices. Feel free to submit issues if there is an issue on a specific device.
 
 A significant part of this project was made using Gemini AI. The project has been tested and edited by me, to ensure there aren't critical AI-made errors.
