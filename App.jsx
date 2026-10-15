@@ -46,6 +46,7 @@ import {
   Coffee
 } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
+import { useGitHubAutoUpdater, GitHubSettingsUpdateCard, GitHubStartupUpdateModal } from './GitHubUpdater';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
@@ -64,13 +65,13 @@ import { getDatabase, ref, set, get, onValue } from 'firebase/database';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
-  apiKey: "[put your own firebase key here]",
-  authDomain: "[put your own firebase domain here]",
-  databaseURL: "[put your own firebase URL here]",
-  projectId: "[put your own project ID here]",
-  storageBucket: "[put your own storage bucket here]",
-  messagingSenderId: "[put your own sender ID here]",
-  appId: "[put your own app ID here]"
+  apiKey: "",
+  authDomain: "",
+  databaseURL: "",
+  projectId: "",
+  storageBucket: "",
+  messagingSenderId: "",
+  appId: ""
 };
 
 const firebaseApp = initializeApp(firebaseConfig);
@@ -187,8 +188,14 @@ const DEFAULT_STUDY_DATA = {
   reminders: []
 };
 
+const DEFAULT_CLASS_NOTIF_CONFIG = {
+  enabled: true,
+  leadMinutes: [30]
+};
+
 const LIVE_TIMER_NOTIF_ID = 888888;
 const GOAL_PRESETS = [15, 30, 45, 60, 90, 120];
+const CLASS_NOTIF_PRESETS = [5, 10, 15, 30, 45, 60, 120];
 
 function UniversityLogoIcon({ className = 'w-6 h-6' }) {
   return (
@@ -272,7 +279,25 @@ function normalizeStudyData(raw) {
     normalMins: Math.max(1, Number(raw.normalMins) || 45),
     logs: raw.logs && typeof raw.logs === 'object' ? raw.logs : {},
     vacationDays: Array.isArray(raw.vacationDays) ? raw.vacationDays : [],
-    reminders: Array.isArray(raw.reminders) ? raw.reminders : []
+    reminders: Array.isArray(raw.reminders) ? raw.reminders : [],
+    activeTimer: raw.activeTimer && typeof raw.activeTimer === 'object' ? raw.activeTimer : null
+  };
+}
+
+function normalizeClassNotifConfig(raw) {
+  if (!raw || typeof raw !== 'object') return DEFAULT_CLASS_NOTIF_CONFIG;
+  const enabled = typeof raw.enabled === 'boolean' ? raw.enabled : true;
+  const rawList = Array.isArray(raw.leadMinutes) ? raw.leadMinutes : [30];
+  const cleaned = Array.from(
+    new Set(
+      rawList
+        .map((m) => Math.max(1, Math.min(1440, Math.round(Number(m) || 0))))
+        .filter((m) => m > 0)
+    )
+  ).sort((a, b) => a - b);
+  return {
+    enabled,
+    leadMinutes: cleaned.length > 0 ? cleaned : [30]
   };
 }
 
@@ -619,6 +644,18 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('today');
 
   const [animTrigger, setAnimTrigger] = useState(1);
+  const gitHubUpdater = useGitHubAutoUpdater();
+
+  // --- Customizable Multi-Alert Class Notification Settings (Default: Enabled, 30m before) ---
+  const [classNotifConfig, setClassNotifConfig] = useState(() => {
+    try {
+      const saved = localStorage.getItem('classtrack_class_notifs_v1');
+      return saved ? normalizeClassNotifConfig(JSON.parse(saved)) : DEFAULT_CLASS_NOTIF_CONFIG;
+    } catch (e) {
+      return DEFAULT_CLASS_NOTIF_CONFIG;
+    }
+  });
+  const [customClassLeadInput, setCustomClassLeadInput] = useState('');
 
   const [courses, setCourses] = useState(() => {
     try {
@@ -677,8 +714,8 @@ export default function App() {
   const todayStr = toLocalDateString(new Date());
 
   // --- Study Timer Runtime States ---
-  const [timerMode, setTimerMode] = useState('pomodoro'); // 'pomodoro' | 'normal'
-  const [pomoPhase, setPomoPhase] = useState('work'); // 'work' | 'break'
+  const [timerMode, setTimerMode] = useState('pomodoro');
+  const [pomoPhase, setPomoPhase] = useState('work');
   const [studyTopic, setStudyTopic] = useState('');
   const [timerTotalSeconds, setTimerTotalSeconds] = useState(() => (studyData.pomoWorkMins || 25) * 60);
   const [timerSecondsLeft, setTimerSecondsLeft] = useState(() => (studyData.pomoWorkMins || 25) * 60);
@@ -732,6 +769,7 @@ export default function App() {
   useEffect(() => { localStorage.setItem('unitrack_theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
   useEffect(() => { localStorage.setItem('classtrack_ui_style', uiStyle); }, [uiStyle]);
   useEffect(() => { localStorage.setItem('classtrack_late_policy', latePolicy); }, [latePolicy]);
+  useEffect(() => { localStorage.setItem('classtrack_class_notifs_v1', JSON.stringify(classNotifConfig)); }, [classNotifConfig]);
   useEffect(() => { localStorage.setItem('unitrack_courses_v2', JSON.stringify(courses)); }, [courses]);
   useEffect(() => { localStorage.setItem('unitrack_attendance_v2', JSON.stringify(attendance)); }, [attendance]);
   useEffect(() => { localStorage.setItem('unitrack_geneds_v2', JSON.stringify(genEds)); }, [genEds]);
@@ -836,7 +874,6 @@ export default function App() {
       ? 'Your break is over — tap to start your next focus round!'
       : `Awesome job! You completed your ${minsCompleted}m ${studyTopic.trim() || 'study'} session.`;
 
-    // 1. Primary: Native Android Java Chronometer + Exact AlarmManager Completion Alert
     if (typeof window !== 'undefined' && window.AndroidLiveTimer) {
       try {
         window.AndroidLiveTimer.startLiveTimer(title, body, Number(endMs), doneTitle, doneBody);
@@ -844,7 +881,6 @@ export default function App() {
       } catch (e) {}
     }
 
-    // 2. Fallback for Web/Capacitor
     if (Capacitor.isNativePlatform() && notifGranted) {
       try {
         await LocalNotifications.schedule({
@@ -898,7 +934,6 @@ export default function App() {
           );
         }
       } else {
-        // Timer Completed!
         clearInterval(interval);
         setTimerRunning(false);
         timerTargetEndMsRef.current = null;
@@ -920,7 +955,6 @@ export default function App() {
             }
           }));
 
-          // Guarantee high-priority completion notification fires even if user is inside the app
           if (typeof window !== 'undefined' && window.AndroidLiveTimer) {
             try {
               window.AndroidLiveTimer.showInstantStudyAlert(
@@ -967,6 +1001,33 @@ export default function App() {
     return () => clearInterval(interval);
   }, [timerRunning, timerTotalSeconds, timerMode, pomoPhase, studyData, todayStr, encouragingMessage]);
 
+    // --- Sync Active Running Timer Between Phone & Wear OS Watch ---
+  const lastRemoteTimerStampRef = useRef(0);
+
+  useEffect(() => {
+    const remote = studyData.activeTimer;
+    if (!remote || !remote.updatedAt || remote.updatedAt <= lastRemoteTimerStampRef.current) return;
+    lastRemoteTimerStampRef.current = remote.updatedAt;
+
+    if (remote.running && remote.targetEndMs > Date.now()) {
+      const remSecs = Math.max(1, Math.ceil((remote.targetEndMs - Date.now()) / 1000));
+      setTimerMode(remote.mode || 'pomodoro');
+      setPomoPhase(remote.phase || 'work');
+      if (remote.topic !== undefined) setStudyTopic(remote.topic);
+      setTimerTotalSeconds(remote.totalSeconds || remSecs);
+      setTimerSecondsLeft(remSecs);
+      timerTargetEndMsRef.current = remote.targetEndMs;
+      if (!timerRunning) {
+        setTimerRunning(true);
+        startNativeLiveTimerNotification(remote.targetEndMs, (remote.mode === 'pomodoro' && remote.phase === 'break'), 'Synced from Wear OS Watch');
+      }
+    } else if (!remote.running && timerRunning) {
+      setTimerRunning(false);
+      timerTargetEndMsRef.current = null;
+      if (remote.remainingSeconds) setTimerSecondsLeft(remote.remainingSeconds);
+      stopNativeLiveTimerNotification();
+    }
+  }, [studyData.activeTimer]);
   const startOrPauseTimer = async () => {
     if (timerRunning) {
       setTimerRunning(false);
@@ -1050,7 +1111,7 @@ export default function App() {
     };
   }, []);
 
-  // Helper to apply cloud snapshot cleanly
+  // --- Apply Cloud Snapshot (Saves and Restores ALL Data Including Streak Data!) ---
   const applyCloudSnapshot = (data) => {
     if (!data) return;
     if (data.updatedAt && data.updatedAt === lastSyncedStampRef.current) return;
@@ -1069,6 +1130,7 @@ export default function App() {
         manualGenEdCounts: data.manualOverrides.manualGenEdCounts || {}
       });
     }
+    // Cloud Sync restores full studyData including streak logs and vacationDays
     if (data.studyData && typeof data.studyData === 'object') {
       setStudyData(normalizeStudyData(data.studyData));
     }
@@ -1076,6 +1138,9 @@ export default function App() {
       if (typeof data.settings.darkMode === 'boolean') setDarkMode(data.settings.darkMode);
       if (data.settings.uiStyle) setUiStyle(data.settings.uiStyle);
       if (data.settings.latePolicy) setLatePolicy(data.settings.latePolicy);
+      if (data.settings.classNotifConfig) {
+        setClassNotifConfig(normalizeClassNotifConfig(data.settings.classNotifConfig));
+      }
     }
 
     setTimeout(() => {
@@ -1108,7 +1173,7 @@ export default function App() {
             lastSyncedStampRef.current = stamp;
             await set(userRef, {
               updatedAt: stamp,
-              settings: { darkMode, uiStyle, latePolicy },
+              settings: { darkMode, uiStyle, latePolicy, classNotifConfig },
               courses,
               attendance,
               genEds,
@@ -1160,7 +1225,7 @@ export default function App() {
     };
   }, []);
 
-  // --- 3. Auto-Push Any Local Change to Cloud Immediately ---
+  // --- 3. Auto-Push Any Local Change (Including Streak Data & Class Notif Settings) to Cloud ---
   useEffect(() => {
     if (!cloudUser || !cloudReadyToPush || isApplyingRemoteRef.current) return;
     const timer = setTimeout(async () => {
@@ -1169,7 +1234,7 @@ export default function App() {
         lastSyncedStampRef.current = stamp;
         await set(ref(firebaseDb, `users/${cloudUser.uid}`), {
           updatedAt: stamp,
-          settings: { darkMode, uiStyle, latePolicy },
+          settings: { darkMode, uiStyle, latePolicy, classNotifConfig },
           courses,
           attendance,
           genEds,
@@ -1179,7 +1244,7 @@ export default function App() {
       } catch (e) {}
     }, 600);
     return () => clearTimeout(timer);
-  }, [courses, attendance, genEds, manualOverrides, studyData, darkMode, uiStyle, latePolicy, cloudUser, cloudReadyToPush]);
+  }, [courses, attendance, genEds, manualOverrides, studyData, darkMode, uiStyle, latePolicy, classNotifConfig, cloudUser, cloudReadyToPush]);
 
   const handleGoogleSignIn = async () => {
     try {
@@ -1291,12 +1356,11 @@ export default function App() {
     checkInitialPermission();
   }, []);
 
-  // --- Sync Class Reminders & Exact Native Hardware Study Reminders ---
-  const syncNotificationsWithOS = async (currentCourses, currentAttendance, currentStudyData) => {
-    // 1. Schedule Exact Native Android AlarmManager Study Reminders (Fires even when app is completely closed!)
+  // --- Sync Customizable Multi-Alert Class Reminders & Native Hardware Study Reminders ---
+  const syncNotificationsWithOS = async (currentCourses, currentAttendance, currentStudyData, currentClassNotif = classNotifConfig) => {
+    // 1. Schedule Exact Native Android AlarmManager Study Reminders
     if (typeof window !== 'undefined' && window.AndroidLiveTimer?.scheduleReminderAlarm) {
       try {
-        // Clear previous native reminder slots (500000 - 500150)
         for (let slot = 500000; slot < 500150; slot++) {
           window.AndroidLiveTimer.cancelReminderAlarm(slot);
         }
@@ -1314,7 +1378,6 @@ export default function App() {
               const remTime = new Date(targetDate);
               remTime.setHours(rH, rM, 0, 0);
 
-              // If user sets a reminder for the current minute, schedule it 5 seconds from now so it never gets skipped!
               const diffMs = remTime.getTime() - now.getTime();
               const finalTriggerMs =
                 dayOffset === 0 && diffMs <= 0 && diffMs > -55000
@@ -1343,8 +1406,8 @@ export default function App() {
 
       await LocalNotifications.createChannel({
         id: 'class-reminders',
-        name: 'Class Reminders (30 Min Prior)',
-        description: 'Alerts 30 minutes before scheduled college classes and discussions',
+        name: 'Class Reminders',
+        description: 'Alerts before scheduled college classes and discussions',
         importance: 5,
         visibility: 1,
         vibration: true
@@ -1355,6 +1418,14 @@ export default function App() {
       if (nonLivePending.length > 0) {
         await LocalNotifications.cancel({ notifications: nonLivePending });
       }
+
+      // If user disabled class notifications in Settings, stop here after clearing pending class alerts
+      if (!currentClassNotif?.enabled) return;
+
+      const leadTimes =
+        Array.isArray(currentClassNotif.leadMinutes) && currentClassNotif.leadMinutes.length > 0
+          ? currentClassNotif.leadMinutes
+          : [30];
 
       const notifications = [];
       const now = new Date();
@@ -1380,18 +1451,21 @@ export default function App() {
               const [hours, minutes] = slot.startTime.split(':').map(Number);
               const classStart = new Date(targetDate);
               classStart.setHours(hours, minutes, 0, 0);
-              const triggerTime = new Date(classStart.getTime() - 30 * 60 * 1000);
 
-              if (triggerTime > now) {
-                const secLabel = section.type ? `${section.type}${section.sectionNumber ? ' ' + section.sectionNumber : ''}` : '';
-                notifications.push({
-                  id: notifId++,
-                  title: `${course.code}${secLabel ? ' (' + secLabel + ')' : ''} in 30 Min`,
-                  body: `${course.title} starts at ${formatTime12h(slot.startTime)}${slot.room ? ' in ' + slot.room : ''}.`,
-                  channelId: 'class-reminders',
-                  schedule: { at: triggerTime, allowWhileIdle: true }
-                });
-              }
+              // Schedule a notification for EACH custom lead time configured by the user
+              leadTimes.forEach((leadMin) => {
+                const triggerTime = new Date(classStart.getTime() - Number(leadMin) * 60 * 1000);
+                if (triggerTime > now) {
+                  const secLabel = section.type ? `${section.type}${section.sectionNumber ? ' ' + section.sectionNumber : ''}` : '';
+                  notifications.push({
+                    id: notifId++,
+                    title: `${course.code}${secLabel ? ' (' + secLabel + ')' : ''} in ${leadMin} Min`,
+                    body: `${course.title} starts at ${formatTime12h(slot.startTime)}${slot.room ? ' in ' + slot.room : ''}.`,
+                    channelId: 'class-reminders',
+                    schedule: { at: triggerTime, allowWhileIdle: true }
+                  });
+                }
+              });
             });
           });
         });
@@ -1402,8 +1476,8 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (notifGranted) syncNotificationsWithOS(courses, attendance, studyData);
-  }, [courses, attendance, studyData.reminders, notifGranted]);
+    if (notifGranted) syncNotificationsWithOS(courses, attendance, studyData, classNotifConfig);
+  }, [courses, attendance, studyData.reminders, classNotifConfig, notifGranted]);
 
   const requestNotificationAccess = async () => {
     if (Capacitor.isNativePlatform()) {
@@ -1411,7 +1485,7 @@ export default function App() {
         const perm = await LocalNotifications.requestPermissions();
         if (perm.display === 'granted') {
           setNotifGranted(true);
-          await syncNotificationsWithOS(courses, attendance, studyData);
+          await syncNotificationsWithOS(courses, attendance, studyData, classNotifConfig);
           return true;
         }
       } catch (e) {}
@@ -1427,6 +1501,41 @@ export default function App() {
       setNotifGranted(true);
       return true;
     }
+  };
+
+  const toggleClassLeadMinute = (mins) => {
+    setClassNotifConfig((prev) => {
+      const current = Array.isArray(prev.leadMinutes) ? prev.leadMinutes : [30];
+      const exists = current.includes(mins);
+      let next = exists ? current.filter((m) => m !== mins) : [...current, mins];
+      if (next.length === 0) next = [30];
+      return {
+        ...prev,
+        leadMinutes: next.sort((a, b) => a - b)
+      };
+    });
+  };
+
+  const addCustomClassLeadMinute = () => {
+    const val = Math.round(Number(customClassLeadInput));
+    if (!val || val < 1 || val > 1440) return;
+    setClassNotifConfig((prev) => {
+      const current = Array.isArray(prev.leadMinutes) ? prev.leadMinutes : [30];
+      const next = Array.from(new Set([...current, val])).sort((a, b) => a - b);
+      return { ...prev, enabled: true, leadMinutes: next };
+    });
+    setCustomClassLeadInput('');
+  };
+
+  const removeClassLeadMinute = (mins) => {
+    setClassNotifConfig((prev) => {
+      const current = Array.isArray(prev.leadMinutes) ? prev.leadMinutes : [30];
+      const next = current.filter((m) => m !== mins);
+      return {
+        ...prev,
+        leadMinutes: next.length > 0 ? next : [30]
+      };
+    });
   };
 
   const handleAddStudyReminder = async () => {
@@ -1451,7 +1560,7 @@ export default function App() {
     setStudyData(nextStudyData);
     setNewReminderTopic('');
 
-    await syncNotificationsWithOS(courses, attendance, nextStudyData);
+    await syncNotificationsWithOS(courses, attendance, nextStudyData, classNotifConfig);
     if (hasPerm) {
       setReminderSavedToast(`Exact phone alarm set daily for ${formatTime12h(newReminderTime)}!`);
     } else {
@@ -1593,19 +1702,29 @@ export default function App() {
     }
   };
 
+  // --- Local Backup File Export: Intentionally Excludes Streak Data (logs & vacationDays) ---
   const handleExportBackupData = async () => {
     try {
       setBackupStatusMsg('Preparing backup file...');
+      const studyPreferencesOnly = {
+        dailyGoalMinutes: studyData.dailyGoalMinutes,
+        pomoWorkMins: studyData.pomoWorkMins,
+        pomoBreakMins: studyData.pomoBreakMins,
+        normalMins: studyData.normalMins,
+        reminders: studyData.reminders || []
+        // logs and vacationDays are intentionally omitted from local JSON files so streaks cannot be edited/forged
+      };
+
       const payload = {
         app: 'ClassTrack',
-        version: 3,
+        version: 4,
         exportedAt: new Date().toISOString(),
-        settings: { darkMode, uiStyle, latePolicy },
+        settings: { darkMode, uiStyle, latePolicy, classNotifConfig },
         courses,
         attendance,
         genEds,
         manualOverrides,
-        studyData
+        studyPreferences: studyPreferencesOnly
       };
 
       const jsonStr = JSON.stringify(payload, null, 2);
@@ -1628,13 +1747,13 @@ export default function App() {
         });
 
         await Share.share({
-          title: 'Class Track Full Backup',
+          title: 'Class Track Backup',
           text: 'Class Track backup file (.classtrack.json)',
           url: savedFile.uri,
           dialogTitle: 'Save Class Track Backup File'
         });
 
-        setBackupStatusMsg('Backup exported & saved to Documents!');
+        setBackupStatusMsg('Backup exported (streak data excluded)!');
         setTimeout(() => setBackupStatusMsg(''), 4000);
         return;
       }
@@ -1649,13 +1768,14 @@ export default function App() {
       document.body.removeChild(link);
       setTimeout(() => URL.revokeObjectURL(url), 5000);
 
-      setBackupStatusMsg('Backup downloaded!');
+      setBackupStatusMsg('Backup downloaded (streak data excluded)!');
       setTimeout(() => setBackupStatusMsg(''), 3500);
     } catch (err) {
       setBackupStatusMsg('');
     }
   };
 
+  // --- Local Backup File Import: Restores Courses/Settings but Never Imports Streak Data from JSON ---
   const handleImportBackupFile = (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -1682,16 +1802,32 @@ export default function App() {
             manualGenEdCounts: parsed.manualOverrides.manualGenEdCounts || {}
           });
         }
-        if (parsed.studyData && typeof parsed.studyData === 'object') {
-          setStudyData(normalizeStudyData(parsed.studyData));
+
+        // Only import timer durations & reminders; strictly keep existing local/cloud streak logs & vacationDays
+        const incomingStudy = parsed.studyPreferences || parsed.studyData;
+        if (incomingStudy && typeof incomingStudy === 'object') {
+          setStudyData((prev) => ({
+            ...prev,
+            dailyGoalMinutes: Math.max(1, Number(incomingStudy.dailyGoalMinutes) || prev.dailyGoalMinutes || 60),
+            pomoWorkMins: Math.max(1, Number(incomingStudy.pomoWorkMins) || prev.pomoWorkMins || 25),
+            pomoBreakMins: Math.max(1, Number(incomingStudy.pomoBreakMins) || prev.pomoBreakMins || 5),
+            normalMins: Math.max(1, Number(incomingStudy.normalMins) || prev.normalMins || 45),
+            reminders: Array.isArray(incomingStudy.reminders) ? incomingStudy.reminders : prev.reminders,
+            logs: prev.logs || {},
+            vacationDays: prev.vacationDays || []
+          }));
         }
+
         if (parsed.settings) {
           if (typeof parsed.settings.darkMode === 'boolean') setDarkMode(parsed.settings.darkMode);
           if (parsed.settings.uiStyle) setUiStyle(parsed.settings.uiStyle);
           if (parsed.settings.latePolicy) setLatePolicy(parsed.settings.latePolicy);
+          if (parsed.settings.classNotifConfig) {
+            setClassNotifConfig(normalizeClassNotifConfig(parsed.settings.classNotifConfig));
+          }
         }
 
-        setBackupStatusMsg('All data restored from backup!');
+        setBackupStatusMsg('Data restored (streak data kept intact)!');
         setTimeout(() => setBackupStatusMsg(''), 4000);
       } catch (err) {
         setBackupStatusMsg('Could not read backup file.');
@@ -2050,6 +2186,7 @@ export default function App() {
       style={{ paddingTop: 'env(safe-area-inset-top, 26px)' }}
     >
       <ConfettiCanvas active={confettiActive} />
+      <GitHubStartupUpdateModal updater={gitHubUpdater} theme={theme} />
 
       <style>{`
         * {
@@ -2257,16 +2394,16 @@ export default function App() {
         {/* ================= TODAY TAB ================= */}
         {activeTab === 'today' && (
           <div key={`today_${uiStyle}_${animTrigger}`} className="space-y-6 m3-card-enter">
-            {!notifGranted && (
+            {!notifGranted && classNotifConfig.enabled && (
               <div className={`p-5 rounded-[32px] ${theme.glassCard} flex items-center justify-between gap-3`}>
                 <div className="flex items-center gap-3.5">
                   <div className={`p-3.5 rounded-full ${theme.tonalPill}`}>
                     <Bell className="w-6 h-6" />
                   </div>
                   <div>
-                    <h3 className="font-bold text-base">Enable 30-Min Class Alerts</h3>
+                    <h3 className="font-bold text-base">Enable Class Alerts</h3>
                     <p className={`text-xs mt-0.5 ${theme.subtext}`}>
-                      Get lock-screen notifications 30 minutes before lectures and discussions.
+                      Get lock-screen notifications ({(classNotifConfig.leadMinutes || [30]).map((m) => `${m}m`).join(', ')} prior) before classes.
                     </p>
                   </div>
                 </div>
@@ -2595,7 +2732,6 @@ export default function App() {
             {/* 1. Streak (Glows Red when Active) & Daily Study Goal (Glows Green when Completed) */}
             <div className={`rounded-[32px] p-6 space-y-4 ${theme.glassCard}`}>
               <div className="grid grid-cols-2 gap-3.5 text-center">
-                {/* Day Streak Box — Glows Red when Today's Streak is Completed! */}
                 <div
                   className={`p-4 rounded-3xl flex flex-col items-center justify-center transition-all duration-500 ${
                     studyMetrics.isTodayStreakCompleted
@@ -2624,7 +2760,6 @@ export default function App() {
                   </span>
                 </div>
 
-                {/* Study Goal Box — Glows Green when Daily Study Goal is Completed! */}
                 <div
                   className={`p-4 rounded-3xl flex flex-col items-center justify-center transition-all duration-500 ${
                     studyMetrics.isGoalCompleted
@@ -2656,7 +2791,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Daily Goal Progress Bar */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs font-extrabold px-1">
                   <span>Daily Goal Progress</span>
@@ -2674,7 +2808,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Properly Contained Daily Target Customizer (Stacked so it NEVER overflows the card!) */}
               <div className={`p-4 rounded-3xl space-y-3 ${theme.surfaceElevated}`}>
                 <div className="flex items-center justify-between px-1">
                   <span className={`text-xs font-extrabold uppercase tracking-wider ${theme.subtext}`}>
@@ -2685,7 +2818,6 @@ export default function App() {
                   </span>
                 </div>
 
-                {/* 5-Column Centered Stepper Row that fits 100% inside the card */}
                 <div className="grid grid-cols-5 gap-2 items-center">
                   <button
                     type="button"
@@ -2752,7 +2884,6 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* Popular Preset Pills (15m, 30m, 45m, 60m, 90m, 120m) */}
                 <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 pt-1">
                   {GOAL_PRESETS.map((preset) => {
                     const isSelected = Number(studyData.dailyGoalMinutes) === preset;
@@ -2844,7 +2975,6 @@ export default function App() {
                 />
               </div>
 
-              {/* Giant Centered Circular Progress Ring & Countdown */}
               <div className="relative w-64 h-64 flex items-center justify-center my-1">
                 <svg className="w-full h-full -rotate-90" viewBox="0 0 250 250">
                   <circle
@@ -3279,7 +3409,7 @@ export default function App() {
                               reminders: (studyData.reminders || []).filter((r) => r.id !== rem.id)
                             };
                             setStudyData(updated);
-                            syncNotificationsWithOS(courses, attendance, updated);
+                            syncNotificationsWithOS(courses, attendance, updated, classNotifConfig);
                           }}
                           className="p-2 rounded-full text-rose-500 m3-btn"
                         >
@@ -3713,6 +3843,9 @@ export default function App() {
             </div>
 
             <div className="p-6 overflow-y-auto space-y-5 flex-1">
+              <GitHubSettingsUpdateCard updater={gitHubUpdater} theme={theme} />
+
+              {/* 1. Google Cloud Sync (Saves ALL Data Including Streaks) */}
               <div className={`p-5 rounded-[28px] space-y-3.5 ${theme.glassCard}`}>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -3731,7 +3864,7 @@ export default function App() {
                 {!cloudUser ? (
                   <>
                     <p className={`text-xs ${theme.subtext}`}>
-                      Sign in with your Google account to automatically sync your courses, study streaks, attendance, and Gen Eds across devices every time you open the app.
+                      Sign in with your Google account to automatically sync all data—including your daily study streaks, courses, attendance, and Gen Eds—across devices.
                     </p>
                     <button
                       type="button"
@@ -3765,6 +3898,132 @@ export default function App() {
                 )}
               </div>
 
+              {/* 2. Customizable Multi-Alert Class Notifications */}
+              <div className={`p-5 rounded-[28px] space-y-4 ${theme.glassCard}`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Bell className="w-4 h-4" />
+                    <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
+                      Class Notifications
+                    </h3>
+                  </div>
+                  <span
+                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${
+                      classNotifConfig.enabled
+                        ? 'bg-emerald-500/20 text-emerald-500'
+                        : 'bg-slate-500/20 text-slate-400'
+                    }`}
+                  >
+                    {classNotifConfig.enabled ? 'Enabled' : 'Disabled'}
+                  </span>
+                </div>
+
+                <p className={`text-xs ${theme.subtext}`}>
+                  Choose whether to receive push notifications on your phone before classes, and select one or multiple reminder times (default is 30m before).
+                </p>
+
+                {/* Enable / Disable Toggle Pills */}
+                <div className={`p-1.5 rounded-full grid grid-cols-2 gap-2 ${theme.surfaceElevated}`}>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (!notifGranted) await requestNotificationAccess();
+                      setClassNotifConfig((prev) => ({ ...prev, enabled: true }));
+                    }}
+                    className={`w-full py-2.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${
+                      classNotifConfig.enabled ? theme.primaryPill : theme.subtext
+                    }`}
+                  >
+                    <Bell className="w-3.5 h-3.5" />
+                    <span>Notifications On</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setClassNotifConfig((prev) => ({ ...prev, enabled: false }))}
+                    className={`w-full py-2.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${
+                      !classNotifConfig.enabled ? theme.primaryPill : theme.subtext
+                    }`}
+                  >
+                    <Ban className="w-3.5 h-3.5" />
+                    <span>Notifications Off</span>
+                  </button>
+                </div>
+
+                {classNotifConfig.enabled && (
+                  <div className="space-y-3 pt-1">
+                    <div>
+                      <label className={`block text-[11px] font-bold mb-2 ${theme.subtext}`}>
+                        Active Alert Times Before Class (Tap to toggle multiple):
+                      </label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {CLASS_NOTIF_PRESETS.map((mins) => {
+                          const isSelected = (classNotifConfig.leadMinutes || [30]).includes(mins);
+                          return (
+                            <button
+                              key={mins}
+                              type="button"
+                              onClick={() => toggleClassLeadMinute(mins)}
+                              className={`px-3.5 py-2 rounded-full text-xs font-extrabold m3-btn ${
+                                isSelected ? theme.primaryPill : theme.surfaceElevated
+                              }`}
+                            >
+                              {mins}m before
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Add Any Custom Minute Value */}
+                    <div className="flex items-center gap-2 pt-1">
+                      <input
+                        type="number"
+                        min="1"
+                        max="1440"
+                        placeholder="Custom mins before (e.g. 20)..."
+                        value={customClassLeadInput}
+                        onChange={(e) => setCustomClassLeadInput(e.target.value)}
+                        className={`flex-1 px-4 py-2.5 rounded-full text-xs font-extrabold outline-none ${theme.surfaceElevated}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={addCustomClassLeadMinute}
+                        className={`px-4 py-2.5 rounded-full text-xs font-extrabold shrink-0 m3-btn ${theme.tonalPill}`}
+                      >
+                        + Add Alert
+                      </button>
+                    </div>
+
+                    {/* Active Notification Chips */}
+                    <div className={`p-3.5 rounded-2xl space-y-2 ${theme.surfaceElevated}`}>
+                      <span className={`block text-[10px] font-extrabold uppercase tracking-wider ${theme.subtext}`}>
+                        Your Scheduled Alerts Per Class ({(classNotifConfig.leadMinutes || [30]).length}):
+                      </span>
+                      <div className="flex flex-wrap gap-2">
+                        {(classNotifConfig.leadMinutes || [30]).map((mins) => (
+                          <span
+                            key={mins}
+                            className={`px-3 py-1 rounded-full text-xs font-extrabold flex items-center gap-1.5 ${theme.tonalPill}`}
+                          >
+                            <span>{mins} mins before</span>
+                            {(classNotifConfig.leadMinutes || []).length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => removeClassLeadMinute(mins)}
+                                className="text-rose-500 hover:opacity-80"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 3. Theme & UI Design */}
               <div className={`p-5 rounded-[28px] space-y-4 ${theme.glassCard}`}>
                 <div className="flex items-center gap-2">
                   <Palette className="w-4 h-4" />
@@ -3832,6 +4091,7 @@ export default function App() {
                 </div>
               </div>
 
+              {/* 4. Late Attendance Calculation */}
               <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
                 <div className="flex items-center gap-2">
                   <Clock className="w-4 h-4" />
@@ -3874,6 +4134,7 @@ export default function App() {
                 </div>
               </div>
 
+              {/* 5. PDF Schedule Maker */}
               <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
                 <div className="flex items-center gap-2">
                   <Printer className="w-4 h-4" />
@@ -3896,6 +4157,7 @@ export default function App() {
                 </button>
               </div>
 
+              {/* 6. Offline File Backup & Restore (Excludes Streak Data) */}
               <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
                 <div className="flex items-center gap-2">
                   <Database className="w-4 h-4" />
@@ -3904,7 +4166,7 @@ export default function App() {
                   </h3>
                 </div>
                 <p className={`text-xs ${theme.subtext}`}>
-                  Export all data as a standalone `.classtrack.json` file or upload a backup file from your device.
+                  Export your courses, attendance, Gen Eds, and settings as a `.classtrack.json` file. Study streak history is only synced via Google Cloud and is excluded from local files.
                 </p>
 
                 {backupStatusMsg && (
