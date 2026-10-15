@@ -7,7 +7,13 @@ Class Track is a simple yet detailed app for Android to track your college class
 - Track your attendance daily, and get notifications half an hour before classes
 - Track your GPA, credits earned, and add gen-ed attributes to class to track your gen-ed progress
 - Create PDFs of your schedule in a weekly view or a list view
-- Create backup files you can import to use on other devices or if you lose your data
+- Sync your data with your Google account, or create backup files to import your data to any device
+
+## Class Track can help you study:
+- Set daily study goals and study reminders
+- Increase your daily streak by studying everyday
+- Start pomodoro or normal timers to help focus on studying
+- Set your own vacation/off days to avoid losing your streak
 
 ## Class Track is extremely customizable:
 - Class Track has light and dark modes
