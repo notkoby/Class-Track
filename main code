@@ -56,7 +56,7 @@ import { getDatabase, ref, set, get, onValue } from 'firebase/database';
 
 // --- Firebase Configuration ---
 const firebaseConfig = {
-  apiKey: "AIzaSyCt8--a3TK2Y58FDc556v742i-XLSoIMZ0",
+  apiKey: "[REDACTED]",
   authDomain: "class-track-4afce.firebaseapp.com",
   databaseURL: "https://class-track-4afce-default-rtdb.firebaseio.com",
   projectId: "class-track-4afce",
