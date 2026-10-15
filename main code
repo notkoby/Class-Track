@@ -33,13 +33,41 @@ import {
   Upload,
   Settings,
   Palette,
-  Database
+  Database,
+  Cloud,
+  LogOut
 } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { StatusBar, Style } from '@capacitor/status-bar';
+import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
+import { initializeApp } from 'firebase/app';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithCredential,
+  signInWithPopup,
+  onAuthStateChanged,
+  signOut
+} from 'firebase/auth';
+import { getDatabase, ref, set, get, onValue } from 'firebase/database';
+
+// --- Firebase Configuration ---
+const firebaseConfig = {
+  apiKey: "AIzaSyCt8--a3TK2Y58FDc556v742i-XLSoIMZ0",
+  authDomain: "class-track-4afce.firebaseapp.com",
+  databaseURL: "https://class-track-4afce-default-rtdb.firebaseio.com",
+  projectId: "class-track-4afce",
+  storageBucket: "class-track-4afce.firebasestorage.app",
+  messagingSenderId: "123629622652",
+  appId: "1:123629622652:web:41e78127cd18fdb8c240f9"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const firebaseAuth = getAuth(firebaseApp);
+const firebaseDb = getDatabase(firebaseApp);
 
 const DAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAYS_FULL = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -548,6 +576,13 @@ export default function App() {
   const [backupStatusMsg, setBackupStatusMsg] = useState('');
   const fileInputRef = useRef(null);
 
+  // --- Seamless Automatic Google Sign-In & Cloud Sync States ---
+  const [cloudUser, setCloudUser] = useState(null);
+  const [cloudSyncStatus, setCloudSyncStatus] = useState('');
+  const [cloudReadyToPush, setCloudReadyToPush] = useState(false);
+  const isApplyingRemoteRef = useRef(false);
+  const lastSyncedStampRef = useRef('');
+
   const [isCourseModalOpen, setIsCourseModalOpen] = useState(false);
   const [editingCourse, setEditingCourse] = useState(null);
   const [customCourseTagInput, setCustomCourseTagInput] = useState('');
@@ -571,20 +606,178 @@ export default function App() {
   useEffect(() => { localStorage.setItem('unitrack_geneds_v2', JSON.stringify(genEds)); }, [genEds]);
   useEffect(() => { localStorage.setItem('unitrack_overrides', JSON.stringify(manualOverrides)); }, [manualOverrides]);
 
-  // --- Status Bar Integration (Matches App Lavender Header Color!) ---
+  // Helper to apply cloud snapshot cleanly without triggering a redundant re-upload loop
+  const applyCloudSnapshot = (data) => {
+    if (!data) return;
+    if (data.updatedAt && data.updatedAt === lastSyncedStampRef.current) return;
+    isApplyingRemoteRef.current = true;
+    if (data.updatedAt) lastSyncedStampRef.current = data.updatedAt;
+
+    if (Array.isArray(data.courses)) setCourses(normalizeCourses(data.courses));
+    if (data.attendance && typeof data.attendance === 'object') setAttendance(data.attendance);
+    if (Array.isArray(data.genEds)) setGenEds(normalizeGenEds(data.genEds));
+    if (data.manualOverrides && typeof data.manualOverrides === 'object') {
+      setManualOverrides({
+        transferCredits: Number(data.manualOverrides.transferCredits) || 0,
+        priorGpaCredits: Number(data.manualOverrides.priorGpaCredits) || 0,
+        priorGpaPoints: Number(data.manualOverrides.priorGpaPoints) || 0,
+        fulfilledGenEds: Array.isArray(data.manualOverrides.fulfilledGenEds) ? data.manualOverrides.fulfilledGenEds : [],
+        manualGenEdCounts: data.manualOverrides.manualGenEdCounts || {}
+      });
+    }
+    if (data.settings) {
+      if (typeof data.settings.darkMode === 'boolean') setDarkMode(data.settings.darkMode);
+      if (data.settings.uiStyle) setUiStyle(data.settings.uiStyle);
+      if (data.settings.latePolicy) setLatePolicy(data.settings.latePolicy);
+    }
+
+    setTimeout(() => {
+      isApplyingRemoteRef.current = false;
+    }, 350);
+  };
+
+  // --- 1. Auto-Sync on App Startup, Auth Change & Real-Time Listener ---
+  useEffect(() => {
+    let dbUnsub = null;
+    const authUnsub = onAuthStateChanged(firebaseAuth, async (user) => {
+      if (dbUnsub) {
+        dbUnsub();
+        dbUnsub = null;
+      }
+      setCloudUser(user || null);
+
+      if (user) {
+        const userRef = ref(firebaseDb, `users/${user.uid}`);
+        try {
+          const snapshot = await get(userRef);
+          if (snapshot.exists()) {
+            applyCloudSnapshot(snapshot.val());
+          } else {
+            const stamp = new Date().toISOString();
+            lastSyncedStampRef.current = stamp;
+            await set(userRef, {
+              updatedAt: stamp,
+              settings: { darkMode, uiStyle, latePolicy },
+              courses,
+              attendance,
+              genEds,
+              manualOverrides
+            });
+          }
+          setCloudReadyToPush(true);
+          setCloudSyncStatus('');
+        } catch (err) {
+          setCloudReadyToPush(true);
+        }
+
+        // Real-time listener so changes on another device appear automatically
+        dbUnsub = onValue(userRef, (snap) => {
+          if (snap.exists()) {
+            applyCloudSnapshot(snap.val());
+          }
+        });
+      } else {
+        setCloudReadyToPush(false);
+        setCloudSyncStatus('');
+      }
+    });
+
+    return () => {
+      authUnsub();
+      if (dbUnsub) dbUnsub();
+    };
+  }, []);
+
+  // --- 2. Auto-Sync Every Time You Open / Resume the App ---
+  useEffect(() => {
+    const syncOnAppOpen = async () => {
+      if (document.visibilityState === 'visible' && firebaseAuth.currentUser) {
+        try {
+          const snapshot = await get(ref(firebaseDb, `users/${firebaseAuth.currentUser.uid}`));
+          if (snapshot.exists()) {
+            applyCloudSnapshot(snapshot.val());
+          }
+        } catch (e) {}
+      }
+    };
+
+    document.addEventListener('visibilitychange', syncOnAppOpen);
+    window.addEventListener('focus', syncOnAppOpen);
+    return () => {
+      document.removeEventListener('visibilitychange', syncOnAppOpen);
+      window.removeEventListener('focus', syncOnAppOpen);
+    };
+  }, []);
+
+  // --- 3. Auto-Push Any Local Change to Cloud Immediately ---
+  useEffect(() => {
+    if (!cloudUser || !cloudReadyToPush || isApplyingRemoteRef.current) return;
+    const timer = setTimeout(async () => {
+      try {
+        const stamp = new Date().toISOString();
+        lastSyncedStampRef.current = stamp;
+        await set(ref(firebaseDb, `users/${cloudUser.uid}`), {
+          updatedAt: stamp,
+          settings: { darkMode, uiStyle, latePolicy },
+          courses,
+          attendance,
+          genEds,
+          manualOverrides
+        });
+      } catch (e) {}
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [courses, attendance, genEds, manualOverrides, darkMode, uiStyle, latePolicy, cloudUser, cloudReadyToPush]);
+
+  const handleGoogleSignIn = async () => {
+    try {
+      setCloudSyncStatus('Signing in...');
+      if (Capacitor.isNativePlatform()) {
+        const result = await FirebaseAuthentication.signInWithGoogle();
+        const idToken = result?.credential?.idToken;
+        if (!idToken) {
+          setCloudSyncStatus('');
+          return;
+        }
+        const credential = GoogleAuthProvider.credential(idToken);
+        await signInWithCredential(firebaseAuth, credential);
+      } else {
+        const provider = new GoogleAuthProvider();
+        await signInWithPopup(firebaseAuth, provider);
+      }
+      setCloudSyncStatus('');
+    } catch (err) {
+      setCloudSyncStatus('Sign-In failed: ' + (err?.message || 'Check connection'));
+    }
+  };
+
+  const handleGoogleSignOut = async () => {
+    try {
+      if (Capacitor.isNativePlatform()) {
+        await FirebaseAuthentication.signOut().catch(() => {});
+      }
+      await signOut(firebaseAuth);
+      setCloudUser(null);
+      setCloudSyncStatus('');
+    } catch (e) {}
+  };
+
+  // --- Full Edge-to-Edge Status Bar Integration ---
   useEffect(() => {
     const bgHex = darkMode
       ? uiStyle === 'glassy'
         ? '#070510'
         : '#141218'
-      : '#EDE4FF';
+      : uiStyle === 'glassy'
+      ? '#EDE4FF'
+      : '#FEF7FF';
 
     document.documentElement.style.backgroundColor = bgHex;
     document.body.style.backgroundColor = bgHex;
 
     if (Capacitor.isNativePlatform()) {
-      StatusBar.setOverlaysWebView({ overlay: false }).catch(() => {});
-      StatusBar.setBackgroundColor({ color: bgHex }).catch(() => {});
+      StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {});
+      StatusBar.setBackgroundColor({ color: '#00000000' }).catch(() => {});
       StatusBar.setStyle({ style: darkMode ? Style.Dark : Style.Light }).catch(() => {});
     }
   }, [darkMode, uiStyle]);
@@ -1302,7 +1495,7 @@ export default function App() {
 
   return (
     <div
-      className={`min-h-screen pb-36 transition-colors duration-500 font-sans relative overflow-x-hidden ${theme.bg} ${
+      className={`min-h-screen pb-40 transition-colors duration-500 font-sans relative overflow-x-hidden ${theme.bg} ${
         isGlassy ? 'mode-glassy' : 'mode-expressive'
       }`}
       style={{ paddingTop: 'env(safe-area-inset-top, 26px)' }}
@@ -1334,7 +1527,7 @@ export default function App() {
           animation: launchExpressiveBounce 0.72s cubic-bezier(0.34, 1.65, 0.64, 1);
         }
 
-        /* 2. SILKY SMOOTH GLASSY FADE-IN ANIMATION (Zero WebView backdrop-filter glitching!) */
+        /* 2. SILKY SMOOTH GLASSY FADE-IN ANIMATION */
         @keyframes glassSmoothFadeIn {
           0% {
             opacity: 0;
@@ -1447,7 +1640,7 @@ export default function App() {
         }
       `}</style>
 
-      {/* Vibrant Floating Color Blobs (Visible through the transparent frosted glass cards & status bar) */}
+      {/* Vibrant Floating Color Blobs */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden z-0">
         <div
           className={`orb-float-1 absolute -top-16 -left-16 w-80 h-80 rounded-full blur-3xl transition-opacity duration-700 ${
@@ -1466,14 +1659,14 @@ export default function App() {
         />
       </div>
 
-      {/* ================= FLOATING ROUNDED TOP APP BAR ================= */}
+      {/* ================= FLOATING ROUNDED TOP APP BAR (No green dot on Settings icon) ================= */}
       <div
         key={`hdr_${uiStyle}_${animTrigger}`}
-        className={`sticky top-2 z-30 px-4 pt-2 pb-1 max-w-lg mx-auto ${
+        className={`sticky top-3 z-30 px-4 pt-3 pb-2 max-w-lg mx-auto ${
           isGlassy ? 'app-launch-glass' : 'app-launch-expressive'
         }`}
       >
-        <header className={`rounded-[32px] px-5 py-3.5 flex items-center justify-between transition-all duration-300 ${theme.glassCard}`}>
+        <header className={`rounded-[32px] px-5 py-4 flex items-center justify-between transition-all duration-300 ${theme.glassCard}`}>
           <div className="flex items-center gap-3.5">
             <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-sm expressive-badge ${theme.tonalPill}`}>
               <UniversityLogoIcon className="w-6 h-6" />
@@ -1496,11 +1689,11 @@ export default function App() {
         </header>
       </div>
 
-      {/* Main Content Container */}
-      <main className="relative z-10 px-4 max-w-lg mx-auto space-y-5 mt-3">
+      {/* Main Content Container with Generous Breathing Space */}
+      <main className="relative z-10 px-4 max-w-lg mx-auto space-y-6 mt-5">
         {/* ================= TODAY TAB ================= */}
         {activeTab === 'today' && (
-          <div key={`today_${uiStyle}_${animTrigger}`} className="space-y-5 m3-card-enter">
+          <div key={`today_${uiStyle}_${animTrigger}`} className="space-y-6 m3-card-enter">
             {!notifGranted && (
               <div className={`p-5 rounded-[32px] ${theme.glassCard} flex items-center justify-between gap-3`}>
                 <div className="flex items-center gap-3.5">
@@ -1583,8 +1776,8 @@ export default function App() {
             </div>
 
             <div className="flex items-center justify-between px-1 pt-1">
-              <h2 className="text-xl font-extrabold">Today's Schedule</h2>
-              <span className={`text-xs font-bold px-3.5 py-1.5 rounded-full ${theme.glassCard}`}>
+              <h2 className="text-2xl font-extrabold tracking-tight">Today's Schedule</h2>
+              <span className={`text-xs font-bold px-4 py-1.5 rounded-full ${theme.glassCard}`}>
                 {todaySessions.length} {todaySessions.length === 1 ? 'Session' : 'Sessions'}
               </span>
             </div>
@@ -1596,7 +1789,7 @@ export default function App() {
                 <p className={`text-sm mt-1 ${theme.subtext}`}>Enjoy your free day or add courses in the Classes tab.</p>
               </div>
             ) : (
-              <div className="space-y-4">
+              <div className="space-y-5">
                 {todaySessions.map(({ sessionKey, course, section, slot, status }) => {
                   const cStyle = getColorStyle(course.color);
                   return (
@@ -1608,7 +1801,7 @@ export default function App() {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <div className="flex items-center gap-2 flex-wrap">
+                          <div className="flex items-center gap-2.5 flex-wrap">
                             <span
                               className="px-3.5 py-1 rounded-full text-xs font-extrabold tracking-wide"
                               style={{ backgroundColor: cStyle.bg, color: cStyle.text }}
@@ -1619,7 +1812,7 @@ export default function App() {
                               {section.type} {section.sectionNumber}
                             </span>
                           </div>
-                          <h3 className="font-extrabold text-xl mt-2.5 leading-snug">{course.title}</h3>
+                          <h3 className="font-extrabold text-xl mt-3 leading-snug">{course.title}</h3>
                         </div>
                         <div className={`px-3.5 py-2 rounded-2xl text-right shrink-0 ${theme.surfaceElevated}`}>
                           <p className="font-extrabold text-sm">{formatTime12h(slot.startTime)}</p>
@@ -1627,7 +1820,7 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className={`flex flex-wrap items-center gap-4 mt-3.5 text-sm font-medium ${theme.subtext}`}>
+                      <div className={`flex flex-wrap items-center gap-4 mt-4 text-sm font-medium ${theme.subtext}`}>
                         {slot.room && (
                           <span className="flex items-center gap-1.5">
                             <MapPin className="w-4 h-4" /> {slot.room}
@@ -1676,7 +1869,7 @@ export default function App() {
 
         {/* ================= CALENDAR TAB ================= */}
         {activeTab === 'calendar' && (
-          <div key={`calendar_${uiStyle}_${animTrigger}`} className="space-y-5 m3-card-enter">
+          <div key={`calendar_${uiStyle}_${animTrigger}`} className="space-y-6 m3-card-enter">
             <div className={`rounded-[32px] p-6 ${theme.glassCard}`}>
               <div className="flex items-center justify-between mb-5">
                 <h2 className="font-extrabold text-xl">
@@ -1762,8 +1955,8 @@ export default function App() {
               </div>
             </div>
 
-            <div className="space-y-3.5">
-              <h3 className="font-extrabold text-lg px-1">
+            <div className="space-y-4">
+              <h3 className="font-extrabold text-xl px-1">
                 Schedule for{' '}
                 {(() => {
                   const [y, m, d] = selectedDate.split('-').map(Number);
@@ -1789,7 +1982,7 @@ export default function App() {
                             {section.type} {section.sectionNumber}
                           </span>
                         </div>
-                        <h4 className="font-extrabold text-lg mt-2">{course.title}</h4>
+                        <h4 className="font-extrabold text-lg mt-2.5">{course.title}</h4>
                         <p className={`text-xs font-medium mt-1 ${theme.subtext}`}>
                           {formatTime12h(slot.startTime)} – {formatTime12h(slot.endTime)}
                           {slot.room ? ` · ${slot.room}` : ''}
@@ -1826,67 +2019,64 @@ export default function App() {
           </div>
         )}
 
-        {/* ================= CLASSES TAB ================= */}
+        {/* ================= CLASSES TAB (More Spacing + Larger Title + No Subtitle) ================= */}
         {activeTab === 'classes' && (
-          <div key={`classes_${uiStyle}_${animTrigger}`} className="space-y-5 m3-card-enter">
-            <div className="flex items-center justify-between px-1">
-              <div>
-                <h2 className="text-xl font-extrabold">My Courses</h2>
-                <p className={`text-xs font-medium ${theme.subtext}`}>Lecture, Discussion & Lab sections</p>
-              </div>
+          <div key={`classes_${uiStyle}_${animTrigger}`} className="space-y-6 m3-card-enter">
+            <div className="flex items-center justify-between px-2 pt-1">
+              <h2 className="text-2xl font-extrabold tracking-tight">My Courses</h2>
               <button
                 type="button"
                 onClick={openAddCourseModal}
-                className={`px-5 py-3 rounded-full text-xs font-extrabold flex items-center gap-1.5 m3-btn ${theme.primaryPill}`}
+                className={`px-5 py-3.5 rounded-full text-xs font-extrabold flex items-center gap-2 m3-btn ${theme.primaryPill}`}
               >
                 <Plus className="w-4 h-4" /> Add Course
               </button>
             </div>
 
-            <div className="space-y-4">
+            <div className="space-y-5">
               {courses.map((course) => {
                 const cStyle = getColorStyle(course.color);
                 const isFutureCourse = Boolean(course.startDate && course.startDate > todayStr);
                 return (
-                  <div key={course.id} className={`rounded-[32px] p-6 ${theme.glassCard}`}>
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="px-3.5 py-1 rounded-full text-xs font-extrabold" style={{ backgroundColor: cStyle.bg, color: cStyle.text }}>
+                  <div key={course.id} className={`rounded-[32px] p-6 space-y-4 ${theme.glassCard}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                          <span className="px-3.5 py-1.5 rounded-full text-xs font-extrabold" style={{ backgroundColor: cStyle.bg, color: cStyle.text }}>
                             {course.code}
                           </span>
-                          <span className={`px-3 py-1 rounded-full text-xs font-bold ${theme.surfaceElevated}`}>
+                          <span className={`px-3.5 py-1.5 rounded-full text-xs font-bold ${theme.surfaceElevated}`}>
                             {course.credits} Credits
                           </span>
-                          <span className={`px-3 py-1 rounded-full text-xs font-bold ${theme.surfaceElevated}`}>
+                          <span className={`px-3.5 py-1.5 rounded-full text-xs font-bold ${theme.surfaceElevated}`}>
                             {isFutureCourse && course.grade === 'In Progress' ? 'Upcoming Semester' : `Grade: ${course.grade}`}
                           </span>
                         </div>
-                        <h3 className="font-extrabold text-xl mt-2.5">{course.title}</h3>
+                        <h3 className="font-extrabold text-xl leading-snug pt-0.5">{course.title}</h3>
                       </div>
 
                       <button
                         type="button"
                         onClick={() => openEditCourseModal(course)}
-                        className={`p-3 rounded-full m3-btn ${theme.surfaceElevated}`}
+                        className={`p-3.5 rounded-full shrink-0 m3-btn ${theme.surfaceElevated}`}
                       >
                         <Edit3 className="w-4 h-4" />
                       </button>
                     </div>
 
                     {course.genEds && course.genEds.length > 0 && (
-                      <div className="flex items-center gap-2 flex-wrap mt-3">
+                      <div className="flex items-center gap-2 flex-wrap pt-0.5">
                         {course.genEds.map((g) => (
-                          <span key={g} className={`px-3 py-1 rounded-full text-xs font-bold ${theme.tonalPill}`}>
+                          <span key={g} className={`px-3.5 py-1 rounded-full text-xs font-bold ${theme.tonalPill}`}>
                             Attr: {g}
                           </span>
                         ))}
                       </div>
                     )}
 
-                    <div className="mt-4 space-y-2.5">
+                    <div className="space-y-3 pt-1">
                       {(course.sections || []).map((sec) => (
-                        <div key={sec.id} className={`p-4 rounded-3xl ${theme.surfaceElevated}`}>
+                        <div key={sec.id} className={`p-4 rounded-3xl space-y-2.5 ${theme.surfaceElevated}`}>
                           <div className="flex items-center justify-between">
                             <span className="font-extrabold text-xs uppercase tracking-wider">
                               {sec.type} {sec.sectionNumber}
@@ -1897,7 +2087,7 @@ export default function App() {
                               </span>
                             )}
                           </div>
-                          <div className="mt-2.5 space-y-1.5">
+                          <div className="space-y-2">
                             {(sec.schedule || []).map((slot, i) => (
                               <div key={i} className={`text-xs flex items-center justify-between ${theme.subtext}`}>
                                 <span className="font-bold text-current">
@@ -1915,7 +2105,7 @@ export default function App() {
                       ))}
                     </div>
 
-                    <p className={`text-xs font-medium mt-3.5 ${theme.subtext}`}>
+                    <p className={`text-xs font-medium pt-1 ${theme.subtext}`}>
                       Semester Dates: {course.startDate} to {course.endDate}
                     </p>
                   </div>
@@ -1927,8 +2117,8 @@ export default function App() {
 
         {/* ================= GPA & GEN ED TAB ================= */}
         {activeTab === 'gpa' && (
-          <div key={`gpa_${uiStyle}_${animTrigger}`} className="space-y-5 m3-card-enter">
-            <div className={`rounded-[32px] p-6 space-y-3 ${theme.glassCard}`}>
+          <div key={`gpa_${uiStyle}_${animTrigger}`} className="space-y-6 m3-card-enter">
+            <div className={`rounded-[32px] p-6 space-y-3.5 ${theme.glassCard}`}>
               <div className={`p-5 rounded-3xl flex flex-col items-center justify-center text-center ${theme.surfaceElevated}`}>
                 <span className={`text-xs font-extrabold uppercase tracking-widest ${theme.subtext}`}>
                   Cumulative GPA
@@ -1938,7 +2128,7 @@ export default function App() {
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 gap-3 text-center">
+              <div className="grid grid-cols-2 gap-3.5 text-center">
                 <div className={`p-4 rounded-3xl flex flex-col items-center justify-center ${theme.surfaceElevated}`}>
                   <span className="text-2xl font-extrabold">{academicStats.totalEarnedCredits}</span>
                   <span className={`text-xs font-bold mt-1 ${theme.subtext}`}>Earned Credits</span>
@@ -1957,7 +2147,7 @@ export default function App() {
             </div>
 
             <div className={`rounded-[32px] p-6 ${theme.glassCard}`}>
-              <div className="flex items-center justify-between mb-4 gap-2">
+              <div className="flex items-center justify-between mb-5 gap-2">
                 <div>
                   <h3 className="font-extrabold text-lg">Gen Ed Requirements</h3>
                   <p className={`text-xs font-medium ${theme.subtext}`}>
@@ -1973,7 +2163,7 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="space-y-3">
+              <div className="space-y-3.5">
                 {genEds.map((req) => {
                   const status = evaluateGenEdProgress(req, courses, manualOverrides);
                   const pct = status.target > 0 ? Math.min(100, Math.round((status.current / status.target) * 100)) : 100;
@@ -2150,11 +2340,10 @@ export default function App() {
         )}
       </main>
 
-      {/* ================= SETTINGS & CUSTOMIZATION MODAL (Fixed Rounded Header + Scrollable Body) ================= */}
+      {/* ================= SETTINGS & CUSTOMIZATION MODAL ================= */}
       {isSettingsModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-4">
           <div className={`w-full max-w-lg max-h-[86vh] rounded-[36px] flex flex-col overflow-hidden shadow-2xl ${theme.bg} border ${theme.border}`}>
-            {/* Pinned Non-Scrolling Header */}
             <div className={`px-6 pt-5 pb-4 flex items-center justify-between shrink-0 border-b ${theme.border}`}>
               <div className="flex items-center gap-2.5">
                 <div className={`p-2.5 rounded-2xl ${theme.tonalPill}`}>
@@ -2171,8 +2360,61 @@ export default function App() {
               </button>
             </div>
 
-            {/* Independently Scrollable Body */}
             <div className="p-6 overflow-y-auto space-y-5 flex-1">
+              {/* 1. Automatic Google Account Cloud Sync Card (No Manual Sync Buttons Needed) */}
+              <div className={`p-5 rounded-[28px] space-y-3.5 ${theme.glassCard}`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Cloud className="w-4 h-4" />
+                    <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
+                      Google Cloud Sync
+                    </h3>
+                  </div>
+                  {cloudUser && (
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-500">
+                      Auto-Sync Active
+                    </span>
+                  )}
+                </div>
+
+                {!cloudUser ? (
+                  <>
+                    <p className={`text-xs ${theme.subtext}`}>
+                      Sign in with your Google account to automatically sync your courses, attendance, and Gen Eds across devices every time you open the app.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleGoogleSignIn}
+                      className={`w-full py-3.5 px-4 rounded-full text-xs font-extrabold flex items-center justify-center gap-2.5 m3-btn ${theme.primaryPill}`}
+                    >
+                      <User className="w-4 h-4" />
+                      <span>Sign in with Google</span>
+                    </button>
+                  </>
+                ) : (
+                  <div className={`p-3.5 rounded-2xl flex items-center justify-between gap-2 ${theme.surfaceElevated}`}>
+                    <div className="truncate">
+                      <p className="font-extrabold text-xs truncate">{cloudUser.displayName || 'Google Account'}</p>
+                      <p className={`text-[11px] truncate ${theme.subtext}`}>{cloudUser.email}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleGoogleSignOut}
+                      className="px-3.5 py-2 rounded-full bg-rose-500/15 text-rose-500 text-xs font-extrabold flex items-center gap-1.5 shrink-0 m3-btn"
+                    >
+                      <LogOut className="w-3.5 h-3.5" /> Sign Out
+                    </button>
+                  </div>
+                )}
+
+                {cloudSyncStatus && (
+                  <p className={`text-[11px] font-bold text-center pt-1 ${theme.subtext}`}>
+                    {cloudSyncStatus}
+                  </p>
+                )}
+              </div>
+
+              {/* 2. Theme & UI Design */}
               <div className={`p-5 rounded-[28px] space-y-4 ${theme.glassCard}`}>
                 <div className="flex items-center gap-2">
                   <Palette className="w-4 h-4" />
@@ -2240,6 +2482,7 @@ export default function App() {
                 </div>
               </div>
 
+              {/* 3. Late Attendance Calculation */}
               <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
                 <div className="flex items-center gap-2">
                   <Clock className="w-4 h-4" />
@@ -2282,6 +2525,7 @@ export default function App() {
                 </div>
               </div>
 
+              {/* 4. PDF Schedule Maker */}
               <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
                 <div className="flex items-center gap-2">
                   <Printer className="w-4 h-4" />
@@ -2304,15 +2548,16 @@ export default function App() {
                 </button>
               </div>
 
+              {/* 5. Offline File Backup & Restore */}
               <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
                 <div className="flex items-center gap-2">
                   <Database className="w-4 h-4" />
                   <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
-                    Backup & Restore Data
+                    Local File Backup & Restore
                   </h3>
                 </div>
                 <p className={`text-xs ${theme.subtext}`}>
-                  Export all courses, sections, attendance records, Gen Eds, and settings into a backup file, or upload a previous backup file to restore your data.
+                  Export all data as a standalone `.classtrack.json` file or upload a backup file from your device.
                 </p>
 
                 {backupStatusMsg && (
@@ -2327,7 +2572,7 @@ export default function App() {
                     onClick={handleExportBackupData}
                     className={`py-3.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${theme.tonalPill}`}
                   >
-                    <Download className="w-4 h-4" /> Export Backup
+                    <Download className="w-4 h-4" /> Export File
                   </button>
 
                   <button
@@ -2335,7 +2580,7 @@ export default function App() {
                     onClick={() => fileInputRef.current?.click()}
                     className={`py-3.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${theme.surfaceElevated}`}
                   >
-                    <Upload className="w-4 h-4" /> Import Backup
+                    <Upload className="w-4 h-4" /> Import File
                   </button>
                   <input
                     ref={fileInputRef}
@@ -2351,7 +2596,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ================= COURSE ADD / EDIT MODAL (Fixed Rounded Header + Scrollable Body) ================= */}
+      {/* ================= COURSE ADD / EDIT MODAL ================= */}
       {isCourseModalOpen && editingCourse && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-4">
           <div className={`w-full max-w-lg max-h-[86vh] rounded-[36px] flex flex-col overflow-hidden shadow-2xl ${theme.bg} border ${theme.border}`}>
@@ -2696,7 +2941,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ================= ADD / EDIT / DELETE GEN ED MODAL (Fixed Rounded Header + Scrollable Body) ================= */}
+      {/* ================= ADD / EDIT / DELETE GEN ED MODAL ================= */}
       {isGenEdModalOpen && editingGenEd && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-4">
           <div className={`w-full max-w-lg max-h-[86vh] rounded-[36px] flex flex-col overflow-hidden shadow-2xl ${theme.bg} border ${theme.border}`}>
