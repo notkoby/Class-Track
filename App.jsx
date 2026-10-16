@@ -47,6 +47,7 @@ import {
 } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
 import { useGitHubAutoUpdater, GitHubSettingsUpdateCard, GitHubStartupUpdateModal } from './GitHubUpdater';
+import { buildDemoCloneState, AdminCloneSettingsModal } from './AdminCloneHelper';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
@@ -645,6 +646,22 @@ export default function App() {
 
   const [animTrigger, setAnimTrigger] = useState(1);
   const gitHubUpdater = useGitHubAutoUpdater();
+  const [isCloneMode, setIsCloneMode] = useState(false);
+
+  const enterAdminCloneMode = () => {
+    try {
+      // Freeze localStorage writes in memory so Demo Clone Mode NEVER touches real local data
+      window.localStorage.setItem = () => {};
+    } catch (e) {}
+    const demo = buildDemoCloneState(todayStr);
+    setIsCloneMode(true);
+    setCourses(demo.courses);
+    setAttendance(demo.attendance);
+    setManualOverrides(demo.overrides);
+    setStudyData(demo.study);
+    setIsSettingsModalOpen(false);
+    setActiveTab('today');
+  };
 
   // --- Customizable Multi-Alert Class Notification Settings (Default: Enabled, 30m before) ---
   const [classNotifConfig, setClassNotifConfig] = useState(() => {
@@ -742,6 +759,7 @@ export default function App() {
   const [showAttendanceDrawer, setShowAttendanceDrawer] = useState(false);
 
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('sync');
   const [backupStatusMsg, setBackupStatusMsg] = useState('');
   const fileInputRef = useRef(null);
 
@@ -1113,6 +1131,7 @@ export default function App() {
 
   // --- Apply Cloud Snapshot (Saves and Restores ALL Data Including Streak Data!) ---
   const applyCloudSnapshot = (data) => {
+    if (isCloneMode) return;
     if (!data) return;
     if (data.updatedAt && data.updatedAt === lastSyncedStampRef.current) return;
     isApplyingRemoteRef.current = true;
@@ -1227,7 +1246,7 @@ export default function App() {
 
   // --- 3. Auto-Push Any Local Change (Including Streak Data & Class Notif Settings) to Cloud ---
   useEffect(() => {
-    if (!cloudUser || !cloudReadyToPush || isApplyingRemoteRef.current) return;
+    if (isCloneMode || !cloudUser || !cloudReadyToPush || isApplyingRemoteRef.current) return;
     const timer = setTimeout(async () => {
       try {
         const stamp = new Date().toISOString();
@@ -3427,15 +3446,26 @@ export default function App() {
         {/* ================= CLASSES TAB ================= */}
         {activeTab === 'classes' && (
           <div key={`classes_${uiStyle}_${animTrigger}`} className="space-y-6 m3-card-enter">
-            <div className="flex items-center justify-between px-2 pt-1">
+            <div className="flex items-center justify-between px-2 pt-1 gap-2">
               <h2 className="text-2xl font-extrabold tracking-tight">My Courses</h2>
-              <button
-                type="button"
-                onClick={openAddCourseModal}
-                className={`px-5 py-3.5 rounded-full text-xs font-extrabold flex items-center gap-2 m3-btn ${theme.primaryPill}`}
-              >
-                <Plus className="w-4 h-4" /> Add Course
-              </button>
+              <div className="flex items-center gap-2">
+                {isCloneMode && (
+                  <button
+                    type="button"
+                    onClick={() => setIsPrintModalOpen(true)}
+                    className={`px-4 py-3.5 rounded-full text-xs font-extrabold flex items-center gap-1.5 m3-btn ${theme.tonalPill}`}
+                  >
+                    <Printer className="w-4 h-4" /> PDF Schedule
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={openAddCourseModal}
+                  className={`px-5 py-3.5 rounded-full text-xs font-extrabold flex items-center gap-2 m3-btn ${theme.primaryPill}`}
+                >
+                  <Plus className="w-4 h-4" /> Add Course
+                </button>
+              </div>
             </div>
 
             <div className="space-y-5">
@@ -3822,384 +3852,449 @@ export default function App() {
         </div>
       )}
 
-      {/* ================= SETTINGS & CUSTOMIZATION MODAL ================= */}
-      {isSettingsModalOpen && (
+      {/* ================= SETTINGS & CUSTOMIZATION MODAL (4 CLEAN TABS) ================= */}
+      {isSettingsModalOpen && isCloneMode && (
+        <AdminCloneSettingsModal onClose={() => setIsSettingsModalOpen(false)} theme={theme} darkMode={darkMode} setDarkMode={setDarkMode} uiStyle={uiStyle} setUiStyle={setUiStyle} setAnimTrigger={setAnimTrigger} studyData={studyData} setStudyData={setStudyData} currentStreak={studyMetrics.streak} todayStr={todayStr} attendanceSummary={attendanceSummary} setAttendance={setAttendance} manualOverrides={manualOverrides} setManualOverrides={setManualOverrides} onOpenPdfMaker={() => { setIsSettingsModalOpen(false); setIsPrintModalOpen(true); }} />
+      )}
+      {isSettingsModalOpen && !isCloneMode && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-4">
           <div className={`w-full max-w-lg max-h-[86vh] rounded-[36px] flex flex-col overflow-hidden shadow-2xl ${theme.bg} border ${theme.border}`}>
-            <div className={`px-6 pt-5 pb-4 flex items-center justify-between shrink-0 border-b ${theme.border}`}>
-              <div className="flex items-center gap-2.5">
-                <div className={`p-2.5 rounded-2xl ${theme.tonalPill}`}>
-                  <Settings className="w-5 h-5" />
-                </div>
-                <h2 className="text-2xl font-extrabold">Settings</h2>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsSettingsModalOpen(false)}
-                className={`p-2.5 rounded-full m3-btn ${theme.surfaceElevated}`}
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="p-6 overflow-y-auto space-y-5 flex-1">
-              <GitHubSettingsUpdateCard updater={gitHubUpdater} theme={theme} />
-
-              {/* 1. Google Cloud Sync (Saves ALL Data Including Streaks) */}
-              <div className={`p-5 rounded-[28px] space-y-3.5 ${theme.glassCard}`}>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Cloud className="w-4 h-4" />
-                    <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
-                      Google Cloud Sync
-                    </h3>
+            {/* Sticky Solid Header + Full-Width Stacked 4-Tab Bar */}
+            <div className={`relative z-20 shrink-0 border-b ${theme.border} ${theme.bg} shadow-sm`}>
+              <div className="px-6 pt-5 pb-3 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className={`p-2.5 rounded-2xl ${theme.tonalPill}`}>
+                    <Settings className="w-5 h-5" />
                   </div>
-                  {cloudUser && (
-                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-500">
-                      Auto-Sync Active
-                    </span>
-                  )}
+                  <h2 className="text-2xl font-extrabold">Settings</h2>
                 </div>
-
-                {!cloudUser ? (
-                  <>
-                    <p className={`text-xs ${theme.subtext}`}>
-                      Sign in with your Google account to automatically sync all data—including your daily study streaks, courses, attendance, and Gen Eds—across devices.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={handleGoogleSignIn}
-                      className={`w-full py-3.5 px-4 rounded-full text-xs font-extrabold flex items-center justify-center gap-2.5 m3-btn ${theme.primaryPill}`}
-                    >
-                      <User className="w-4 h-4" />
-                      <span>Sign in with Google</span>
-                    </button>
-                  </>
-                ) : (
-                  <div className={`p-3.5 rounded-2xl flex items-center justify-between gap-2 ${theme.surfaceElevated}`}>
-                    <div className="truncate">
-                      <p className="font-extrabold text-xs truncate">{cloudUser.displayName || 'Google Account'}</p>
-                      <p className={`text-[11px] truncate ${theme.subtext}`}>{cloudUser.email}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleGoogleSignOut}
-                      className="px-3.5 py-2 rounded-full bg-rose-500/15 text-rose-500 text-xs font-extrabold flex items-center gap-1.5 shrink-0 m3-btn"
-                    >
-                      <LogOut className="w-3.5 h-3.5" /> Sign Out
-                    </button>
-                  </div>
-                )}
-
-                {cloudSyncStatus && (
-                  <p className={`text-[11px] font-bold text-center pt-1 ${theme.subtext}`}>
-                    {cloudSyncStatus}
-                  </p>
-                )}
-              </div>
-
-              {/* 2. Customizable Multi-Alert Class Notifications */}
-              <div className={`p-5 rounded-[28px] space-y-4 ${theme.glassCard}`}>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Bell className="w-4 h-4" />
-                    <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
-                      Class Notifications
-                    </h3>
-                  </div>
-                  <span
-                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${
-                      classNotifConfig.enabled
-                        ? 'bg-emerald-500/20 text-emerald-500'
-                        : 'bg-slate-500/20 text-slate-400'
-                    }`}
-                  >
-                    {classNotifConfig.enabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                </div>
-
-                <p className={`text-xs ${theme.subtext}`}>
-                  Choose whether to receive push notifications on your phone before classes, and select one or multiple reminder times (default is 30m before).
-                </p>
-
-                {/* Enable / Disable Toggle Pills */}
-                <div className={`p-1.5 rounded-full grid grid-cols-2 gap-2 ${theme.surfaceElevated}`}>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      if (!notifGranted) await requestNotificationAccess();
-                      setClassNotifConfig((prev) => ({ ...prev, enabled: true }));
-                    }}
-                    className={`w-full py-2.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${
-                      classNotifConfig.enabled ? theme.primaryPill : theme.subtext
-                    }`}
-                  >
-                    <Bell className="w-3.5 h-3.5" />
-                    <span>Notifications On</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setClassNotifConfig((prev) => ({ ...prev, enabled: false }))}
-                    className={`w-full py-2.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${
-                      !classNotifConfig.enabled ? theme.primaryPill : theme.subtext
-                    }`}
-                  >
-                    <Ban className="w-3.5 h-3.5" />
-                    <span>Notifications Off</span>
-                  </button>
-                </div>
-
-                {classNotifConfig.enabled && (
-                  <div className="space-y-3 pt-1">
-                    <div>
-                      <label className={`block text-[11px] font-bold mb-2 ${theme.subtext}`}>
-                        Active Alert Times Before Class (Tap to toggle multiple):
-                      </label>
-                      <div className="flex flex-wrap gap-1.5">
-                        {CLASS_NOTIF_PRESETS.map((mins) => {
-                          const isSelected = (classNotifConfig.leadMinutes || [30]).includes(mins);
-                          return (
-                            <button
-                              key={mins}
-                              type="button"
-                              onClick={() => toggleClassLeadMinute(mins)}
-                              className={`px-3.5 py-2 rounded-full text-xs font-extrabold m3-btn ${
-                                isSelected ? theme.primaryPill : theme.surfaceElevated
-                              }`}
-                            >
-                              {mins}m before
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* Add Any Custom Minute Value */}
-                    <div className="flex items-center gap-2 pt-1">
-                      <input
-                        type="number"
-                        min="1"
-                        max="1440"
-                        placeholder="Custom mins before (e.g. 20)..."
-                        value={customClassLeadInput}
-                        onChange={(e) => setCustomClassLeadInput(e.target.value)}
-                        className={`flex-1 px-4 py-2.5 rounded-full text-xs font-extrabold outline-none ${theme.surfaceElevated}`}
-                      />
-                      <button
-                        type="button"
-                        onClick={addCustomClassLeadMinute}
-                        className={`px-4 py-2.5 rounded-full text-xs font-extrabold shrink-0 m3-btn ${theme.tonalPill}`}
-                      >
-                        + Add Alert
-                      </button>
-                    </div>
-
-                    {/* Active Notification Chips */}
-                    <div className={`p-3.5 rounded-2xl space-y-2 ${theme.surfaceElevated}`}>
-                      <span className={`block text-[10px] font-extrabold uppercase tracking-wider ${theme.subtext}`}>
-                        Your Scheduled Alerts Per Class ({(classNotifConfig.leadMinutes || [30]).length}):
-                      </span>
-                      <div className="flex flex-wrap gap-2">
-                        {(classNotifConfig.leadMinutes || [30]).map((mins) => (
-                          <span
-                            key={mins}
-                            className={`px-3 py-1 rounded-full text-xs font-extrabold flex items-center gap-1.5 ${theme.tonalPill}`}
-                          >
-                            <span>{mins} mins before</span>
-                            {(classNotifConfig.leadMinutes || []).length > 1 && (
-                              <button
-                                type="button"
-                                onClick={() => removeClassLeadMinute(mins)}
-                                className="text-rose-500 hover:opacity-80"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* 3. Theme & UI Design */}
-              <div className={`p-5 rounded-[28px] space-y-4 ${theme.glassCard}`}>
-                <div className="flex items-center gap-2">
-                  <Palette className="w-4 h-4" />
-                  <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
-                    Theme & UI Design
-                  </h3>
-                </div>
-
-                <div>
-                  <label className={`block text-xs font-bold mb-2 ${theme.subtext}`}>Color Mode</label>
-                  <div className={`p-1.5 rounded-full grid grid-cols-2 gap-2 ${theme.surfaceElevated}`}>
-                    <button
-                      type="button"
-                      onClick={() => setDarkMode(false)}
-                      className={`w-full py-3 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-2 m3-btn ${
-                        !darkMode ? theme.primaryPill : theme.subtext
-                      }`}
-                    >
-                      <Sun className="w-4 h-4 shrink-0" />
-                      <span>Light</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDarkMode(true)}
-                      className={`w-full py-3 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-2 m3-btn ${
-                        darkMode ? theme.primaryPill : theme.subtext
-                      }`}
-                    >
-                      <Moon className="w-4 h-4 shrink-0" />
-                      <span>Dark</span>
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label className={`block text-xs font-bold mb-2 ${theme.subtext}`}>Visual Surface Style</label>
-                  <div className={`p-1.5 rounded-full grid grid-cols-2 gap-2 ${theme.surfaceElevated}`}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setUiStyle('expressive');
-                        setAnimTrigger((k) => k + 1);
-                      }}
-                      className={`w-full py-3 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-2 m3-btn ${
-                        uiStyle === 'expressive' ? theme.primaryPill : theme.subtext
-                      }`}
-                    >
-                      <Layers className="w-4 h-4 shrink-0" />
-                      <span>Expressive</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setUiStyle('glassy');
-                        setAnimTrigger((k) => k + 1);
-                      }}
-                      className={`w-full py-3 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-2 m3-btn ${
-                        uiStyle === 'glassy' ? theme.primaryPill : theme.subtext
-                      }`}
-                    >
-                      <Sparkles className="w-4 h-4 shrink-0" />
-                      <span>Frosted</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* 4. Late Attendance Calculation */}
-              <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
-                <div className="flex items-center gap-2">
-                  <Clock className="w-4 h-4" />
-                  <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
-                    Late Attendance Calculation
-                  </h3>
-                </div>
-                <p className={`text-xs ${theme.subtext}`}>
-                  Choose how marking a class session &quot;Late&quot; counts toward your Semester Attendance percentage:
-                </p>
-
-                <div className={`p-1.5 rounded-3xl grid grid-cols-3 gap-1.5 ${theme.surfaceElevated}`}>
-                  <button
-                    type="button"
-                    onClick={() => setLatePolicy('present')}
-                    className={`py-2.5 px-2 rounded-full text-xs font-extrabold m3-btn ${
-                      latePolicy === 'present' ? theme.primaryPill : theme.subtext
-                    }`}
-                  >
-                    Present (100%)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLatePolicy('half')}
-                    className={`py-2.5 px-2 rounded-full text-xs font-extrabold m3-btn ${
-                      latePolicy === 'half' ? theme.primaryPill : theme.subtext
-                    }`}
-                  >
-                    Half (50%)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLatePolicy('absent')}
-                    className={`py-2.5 px-2 rounded-full text-xs font-extrabold m3-btn ${
-                      latePolicy === 'absent' ? theme.primaryPill : theme.subtext
-                    }`}
-                  >
-                    Absent (0%)
-                  </button>
-                </div>
-              </div>
-
-              {/* 5. PDF Schedule Maker */}
-              <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
-                <div className="flex items-center gap-2">
-                  <Printer className="w-4 h-4" />
-                  <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
-                    PDF Schedule Maker
-                  </h3>
-                </div>
-                <p className={`text-xs ${theme.subtext}`}>
-                  Generate a Weekly Grid or Course List PDF filtered for a specific date or custom semester range.
-                </p>
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsSettingsModalOpen(false);
-                    setIsPrintModalOpen(true);
-                  }}
-                  className={`w-full py-3.5 rounded-full text-xs font-extrabold flex items-center justify-center gap-2 m3-btn ${theme.primaryPill}`}
+                  onClick={() => setIsSettingsModalOpen(false)}
+                  className={`p-2.5 rounded-full m3-btn ${theme.surfaceElevated}`}
                 >
-                  <Printer className="w-4 h-4" /> Open PDF Schedule Maker
+                  <X className="w-5 h-5" />
                 </button>
               </div>
 
-              {/* 6. Offline File Backup & Restore (Excludes Streak Data) */}
-              <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
-                <div className="flex items-center gap-2">
-                  <Database className="w-4 h-4" />
-                  <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
-                    Local File Backup & Restore
-                  </h3>
-                </div>
-                <p className={`text-xs ${theme.subtext}`}>
-                  Export your courses, attendance, Gen Eds, and settings as a `.classtrack.json` file. Study streak history is only synced via Google Cloud and is excluded from local files.
-                </p>
-
-                {backupStatusMsg && (
-                  <div className={`p-3 rounded-2xl text-xs font-extrabold text-center ${theme.tonalPill}`}>
-                    {backupStatusMsg}
-                  </div>
-                )}
-
-                <div className="grid grid-cols-2 gap-2.5 pt-1">
-                  <button
-                    type="button"
-                    onClick={handleExportBackupData}
-                    className={`py-3.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${theme.tonalPill}`}
-                  >
-                    <Download className="w-4 h-4" /> Export File
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className={`py-3.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${theme.surfaceElevated}`}
-                  >
-                    <Upload className="w-4 h-4" /> Import File
-                  </button>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".json,application/json"
-                    onChange={handleImportBackupFile}
-                    className="hidden"
-                  />
+              <div className="px-4 pb-3.5">
+                <div className={`p-1.5 rounded-[24px] grid grid-cols-4 gap-1.5 ${theme.surfaceElevated}`}>
+                  {[
+                    { id: 'sync', label: 'Sync', icon: Cloud },
+                    { id: 'theme', label: 'Theme', icon: Palette },
+                    { id: 'classes', label: 'Classes', icon: CalendarIcon },
+                    { id: 'updates', label: 'Updates', icon: Sparkles }
+                  ].map((t) => {
+                    const Icon = t.icon;
+                    const active = settingsTab === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setSettingsTab(t.id)}
+                        className={`py-2 px-1 rounded-[18px] text-[11px] font-extrabold flex flex-col items-center justify-center gap-1 m3-btn ${
+                          active ? theme.primaryPill : theme.subtext
+                        }`}
+                      >
+                        <Icon className="w-4 h-4 shrink-0" />
+                        <span className="leading-none">{t.label}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
+            </div>
+
+            {/* Isolated Scrollable Tab Content Area */}
+            <div className="relative z-0 p-5 overflow-y-auto overscroll-contain space-y-5 flex-1">
+              {/* TAB 1: SYNC SETTINGS (Google Cloud + JSON File Backup) */}
+              {settingsTab === 'sync' && (
+                <div className="space-y-4 m3-card-enter">
+                  {cloudUser?.email?.toLowerCase()?.trim() === '' && (
+                    <div className={`p-5 rounded-[28px] space-y-3 border-2 border-amber-500/40 ${theme.glassCard}`}>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-extrabold uppercase tracking-wider text-amber-500">
+                          Admin Panel ()
+                        </span>
+                      </div>
+                      <p className={`text-xs ${theme.subtext}`}>
+                        Switch to an isolated Screenshot Clone with preset courses, editable streaks, and in-tab PDF schedule maker. Resets automatically when you reopen the app.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={enterAdminCloneMode}
+                        className="w-full py-3.5 px-4 rounded-full text-xs font-extrabold bg-amber-500 text-white shadow-md flex items-center justify-center gap-2 m3-btn"
+                      >
+                        <Sparkles className="w-4 h-4" />
+                        <span>Launch Screenshot Clone Mode</span>
+                      </button>
+                    </div>
+                  )}
+                  <div className={`p-5 rounded-[28px] space-y-3.5 ${theme.glassCard}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Cloud className="w-4 h-4" />
+                        <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
+                          Google Cloud Sync
+                        </h3>
+                      </div>
+                      {cloudUser && (
+                        <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-500">
+                          Auto-Sync Active
+                        </span>
+                      )}
+                    </div>
+
+                    {!cloudUser ? (
+                      <>
+                        <p className={`text-xs ${theme.subtext}`}>
+                          Sign in with your Google account to automatically sync all data—including your daily study streaks, courses, attendance, and Gen Eds—across phone and watch.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={handleGoogleSignIn}
+                          className={`w-full py-3.5 px-4 rounded-full text-xs font-extrabold flex items-center justify-center gap-2.5 m3-btn ${theme.primaryPill}`}
+                        >
+                          <User className="w-4 h-4" />
+                          <span>Sign in with Google</span>
+                        </button>
+                      </>
+                    ) : (
+                      <div className={`p-3.5 rounded-2xl flex items-center justify-between gap-2 ${theme.surfaceElevated}`}>
+                        <div className="truncate">
+                          <p className="font-extrabold text-xs truncate">{cloudUser.displayName || 'Google Account'}</p>
+                          <p className={`text-[11px] truncate ${theme.subtext}`}>{cloudUser.email}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleGoogleSignOut}
+                          className="px-3.5 py-2 rounded-full bg-rose-500/15 text-rose-500 text-xs font-extrabold flex items-center gap-1.5 shrink-0 m3-btn"
+                        >
+                          <LogOut className="w-3.5 h-3.5" /> Sign Out
+                        </button>
+                      </div>
+                    )}
+
+                    {cloudSyncStatus && (
+                      <p className={`text-[11px] font-bold text-center pt-1 ${theme.subtext}`}>
+                        {cloudSyncStatus}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
+                    <div className="flex items-center gap-2">
+                      <Database className="w-4 h-4" />
+                      <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
+                        Local JSON Backup & Restore
+                      </h3>
+                    </div>
+                    <p className={`text-xs ${theme.subtext}`}>
+                      Export your courses, attendance, Gen Eds, and settings as a `.classtrack.json` file. Study streak history is only synced via Google Cloud and is excluded from local JSON files.
+                    </p>
+
+                    {backupStatusMsg && (
+                      <div className={`p-3 rounded-2xl text-xs font-extrabold text-center ${theme.tonalPill}`}>
+                        {backupStatusMsg}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-2.5 pt-1">
+                      <button
+                        type="button"
+                        onClick={handleExportBackupData}
+                        className={`py-3.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${theme.tonalPill}`}
+                      >
+                        <Download className="w-4 h-4" /> Export JSON
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className={`py-3.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${theme.surfaceElevated}`}
+                      >
+                        <Upload className="w-4 h-4" /> Import JSON
+                      </button>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".json,application/json"
+                        onChange={handleImportBackupFile}
+                        className="hidden"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: THEME SETTINGS (Light/Dark + Expressive/Frosted) */}
+              {settingsTab === 'theme' && (
+                <div className="space-y-4 m3-card-enter">
+                  <div className={`p-5 rounded-[28px] space-y-4 ${theme.glassCard}`}>
+                    <div className="flex items-center gap-2">
+                      <Palette className="w-4 h-4" />
+                      <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
+                        Theme & UI Design
+                      </h3>
+                    </div>
+
+                    <div>
+                      <label className={`block text-xs font-bold mb-2 ${theme.subtext}`}>Color Mode</label>
+                      <div className={`p-1.5 rounded-full grid grid-cols-2 gap-2 ${theme.surfaceElevated}`}>
+                        <button
+                          type="button"
+                          onClick={() => setDarkMode(false)}
+                          className={`w-full py-3 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-2 m3-btn ${
+                            !darkMode ? theme.primaryPill : theme.subtext
+                          }`}
+                        >
+                          <Sun className="w-4 h-4 shrink-0" />
+                          <span>Light</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDarkMode(true)}
+                          className={`w-full py-3 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-2 m3-btn ${
+                            darkMode ? theme.primaryPill : theme.subtext
+                          }`}
+                        >
+                          <Moon className="w-4 h-4 shrink-0" />
+                          <span>Dark</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className={`block text-xs font-bold mb-2 ${theme.subtext}`}>Visual Surface Style</label>
+                      <div className={`p-1.5 rounded-full grid grid-cols-2 gap-2 ${theme.surfaceElevated}`}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUiStyle('expressive');
+                            setAnimTrigger((k) => k + 1);
+                          }}
+                          className={`w-full py-3 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-2 m3-btn ${
+                            uiStyle === 'expressive' ? theme.primaryPill : theme.subtext
+                          }`}
+                        >
+                          <Layers className="w-4 h-4 shrink-0" />
+                          <span>Expressive</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUiStyle('glassy');
+                            setAnimTrigger((k) => k + 1);
+                          }}
+                          className={`w-full py-3 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-2 m3-btn ${
+                            uiStyle === 'glassy' ? theme.primaryPill : theme.subtext
+                          }`}
+                        >
+                          <Sparkles className="w-4 h-4 shrink-0" />
+                          <span>Frosted</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: CALENDAR & CLASS SETTINGS (Notifications + Late Policy + PDF Schedule Maker) */}
+              {settingsTab === 'classes' && (
+                <div className="space-y-4 m3-card-enter">
+                  <div className={`p-5 rounded-[28px] space-y-4 ${theme.glassCard}`}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Bell className="w-4 h-4" />
+                        <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
+                          Class Notifications
+                        </h3>
+                      </div>
+                      <span
+                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${
+                          classNotifConfig.enabled
+                            ? 'bg-emerald-500/20 text-emerald-500'
+                            : 'bg-slate-500/20 text-slate-400'
+                        }`}
+                      >
+                        {classNotifConfig.enabled ? 'Enabled' : 'Disabled'}
+                      </span>
+                    </div>
+
+                    <p className={`text-xs ${theme.subtext}`}>
+                      Choose whether to receive push notifications before classes, and select one or multiple reminder times (default is 30m before).
+                    </p>
+
+                    <div className={`p-1.5 rounded-full grid grid-cols-2 gap-2 ${theme.surfaceElevated}`}>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!notifGranted) await requestNotificationAccess();
+                          setClassNotifConfig((prev) => ({ ...prev, enabled: true }));
+                        }}
+                        className={`w-full py-2.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${
+                          classNotifConfig.enabled ? theme.primaryPill : theme.subtext
+                        }`}
+                      >
+                        <Bell className="w-3.5 h-3.5" />
+                        <span>Notifications On</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setClassNotifConfig((prev) => ({ ...prev, enabled: false }))}
+                        className={`w-full py-2.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${
+                          !classNotifConfig.enabled ? theme.primaryPill : theme.subtext
+                        }`}
+                      >
+                        <Ban className="w-3.5 h-3.5" />
+                        <span>Notifications Off</span>
+                      </button>
+                    </div>
+
+                    {classNotifConfig.enabled && (
+                      <div className="space-y-3 pt-1">
+                        <div>
+                          <label className={`block text-[11px] font-bold mb-2 ${theme.subtext}`}>
+                            Active Alert Times Before Class (Tap to toggle multiple):
+                          </label>
+                          <div className="flex flex-wrap gap-1.5">
+                            {CLASS_NOTIF_PRESETS.map((mins) => {
+                              const isSelected = (classNotifConfig.leadMinutes || [30]).includes(mins);
+                              return (
+                                <button
+                                  key={mins}
+                                  type="button"
+                                  onClick={() => toggleClassLeadMinute(mins)}
+                                  className={`px-3.5 py-2 rounded-full text-xs font-extrabold m3-btn ${
+                                    isSelected ? theme.primaryPill : theme.surfaceElevated
+                                  }`}
+                                >
+                                  {mins}m before
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 pt-1">
+                          <input
+                            type="number"
+                            min="1"
+                            max="1440"
+                            placeholder="Custom mins before (e.g. 20)..."
+                            value={customClassLeadInput}
+                            onChange={(e) => setCustomClassLeadInput(e.target.value)}
+                            className={`flex-1 px-4 py-2.5 rounded-full text-xs font-extrabold outline-none ${theme.surfaceElevated}`}
+                          />
+                          <button
+                            type="button"
+                            onClick={addCustomClassLeadMinute}
+                            className={`px-4 py-2.5 rounded-full text-xs font-extrabold shrink-0 m3-btn ${theme.tonalPill}`}
+                          >
+                            + Add Alert
+                          </button>
+                        </div>
+
+                        <div className={`p-3.5 rounded-2xl space-y-2 ${theme.surfaceElevated}`}>
+                          <span className={`block text-[10px] font-extrabold uppercase tracking-wider ${theme.subtext}`}>
+                            Your Scheduled Alerts Per Class ({(classNotifConfig.leadMinutes || [30]).length}):
+                          </span>
+                          <div className="flex flex-wrap gap-2">
+                            {(classNotifConfig.leadMinutes || [30]).map((mins) => (
+                              <span
+                                key={mins}
+                                className={`px-3 py-1 rounded-full text-xs font-extrabold flex items-center gap-1.5 ${theme.tonalPill}`}
+                              >
+                                <span>{mins} mins before</span>
+                                {(classNotifConfig.leadMinutes || []).length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => removeClassLeadMinute(mins)}
+                                    className="text-rose-500 hover:opacity-80"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-4 h-4" />
+                      <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
+                        Late Attendance Calculation
+                      </h3>
+                    </div>
+                    <p className={`text-xs ${theme.subtext}`}>
+                      Choose how marking a class session &quot;Late&quot; counts toward your Semester Attendance percentage:
+                    </p>
+
+                    <div className={`p-1.5 rounded-3xl grid grid-cols-3 gap-1.5 ${theme.surfaceElevated}`}>
+                      <button
+                        type="button"
+                        onClick={() => setLatePolicy('present')}
+                        className={`py-2.5 px-2 rounded-full text-xs font-extrabold m3-btn ${
+                          latePolicy === 'present' ? theme.primaryPill : theme.subtext
+                        }`}
+                      >
+                        Present (100%)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLatePolicy('half')}
+                        className={`py-2.5 px-2 rounded-full text-xs font-extrabold m3-btn ${
+                          latePolicy === 'half' ? theme.primaryPill : theme.subtext
+                        }`}
+                      >
+                        Half (50%)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLatePolicy('absent')}
+                        className={`py-2.5 px-2 rounded-full text-xs font-extrabold m3-btn ${
+                          latePolicy === 'absent' ? theme.primaryPill : theme.subtext
+                        }`}
+                      >
+                        Absent (0%)
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
+                    <div className="flex items-center gap-2">
+                      <Printer className="w-4 h-4" />
+                      <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
+                        PDF Schedule Maker
+                      </h3>
+                    </div>
+                    <p className={`text-xs ${theme.subtext}`}>
+                      Generate a Weekly Grid or Course List PDF filtered for a specific date or custom semester range.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsSettingsModalOpen(false);
+                        setIsPrintModalOpen(true);
+                      }}
+                      className={`w-full py-3.5 rounded-full text-xs font-extrabold flex items-center justify-center gap-2 m3-btn ${theme.primaryPill}`}
+                    >
+                      <Printer className="w-4 h-4" /> Open PDF Schedule Maker
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 4: UPDATES & WEAR OS WATCH APK MENU */}
+              {settingsTab === 'updates' && (
+                <div className="space-y-4 m3-card-enter">
+                  <GitHubSettingsUpdateCard updater={gitHubUpdater} theme={theme} />
+                </div>
+              )}
             </div>
           </div>
         </div>
