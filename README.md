@@ -35,3 +35,6 @@ Note: This app has not been tested for every device's form factor and Android ve
 <img width="180" height="374" alt="IMG_20261016_154734" src="https://github.com/user-attachments/assets/b5cbac3c-a0de-404a-984f-880b4ef70d6c" />
 <img width="180" height="374" alt="IMG_20261016_154723" src="https://github.com/user-attachments/assets/ec4dc0c7-ea94-4745-af97-1e9ddfdd219c" />
 
+### Download the app:
+- Download the latest release here: https://github.com/notkoby/Class-Track/releases
+- [![Get it on Orion Store](https://raw.githubusercontent.com/RookieEnough/Orion-Store/refs/heads/main/assets/orion-badge.png)](https://rookieenough.github.io/Orion-Data/redirect.html?id=class-track)
