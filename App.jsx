@@ -975,7 +975,8 @@ export default function App() {
 
           if (typeof window !== 'undefined' && window.AndroidLiveTimer) {
             try {
-              window.AndroidLiveTimer.showInstantStudyAlert(
+              if ('Notification' in window && Notification.permission === 'granted' && !window.AndroidLiveTimer) { new Notification('Study Session Complete! 🎉', { body: 'Study session complete!' }); }
+              if (window.AndroidLiveTimer) window.AndroidLiveTimer.showInstantStudyAlert(
                 'Study Session Complete! 🎉',
                 `Awesome job! +${completedMinutes}m added to your study log (${nextToday}m today).`,
                 991001
@@ -1000,7 +1001,8 @@ export default function App() {
         } else {
           if (typeof window !== 'undefined' && window.AndroidLiveTimer) {
             try {
-              window.AndroidLiveTimer.showInstantStudyAlert(
+              if ('Notification' in window && Notification.permission === 'granted' && !window.AndroidLiveTimer) { new Notification('Study Session Complete! 🎉', { body: 'Study session complete!' }); }
+              if (window.AndroidLiveTimer) window.AndroidLiveTimer.showInstantStudyAlert(
                 'Break Complete! ⏰',
                 'Ready for your next focus round!',
                 991002
@@ -2381,7 +2383,7 @@ export default function App() {
       {/* ================= FLOATING ROUNDED TOP APP BAR ================= */}
       <div
         key={`hdr_${uiStyle}_${animTrigger}`}
-        className={`sticky top-3 z-30 px-4 pt-3 pb-2 max-w-lg mx-auto ${
+        className={`sticky top-3 z-30 px-4 pt-3 pb-2 w-full max-w-6xl mx-auto px-4 md:px-8 ${
           isGlassy ? 'app-launch-glass' : 'app-launch-expressive'
         }`}
       >
@@ -2409,7 +2411,7 @@ export default function App() {
       </div>
 
       {/* Main Content Container */}
-      <main className="relative z-10 px-4 max-w-lg mx-auto space-y-6 mt-5">
+      <main className="relative z-10 px-4 w-full max-w-6xl mx-auto px-4 md:px-8 space-y-6 mt-5">
         {/* ================= TODAY TAB ================= */}
         {activeTab === 'today' && (
           <div key={`today_${uiStyle}_${animTrigger}`} className="space-y-6 m3-card-enter">
@@ -5126,7 +5128,7 @@ export default function App() {
       )}
 
       {/* ================= FLOATING ROUNDED 5-TAB BOTTOM NAVIGATION DOCK ================= */}
-      <div className="fixed bottom-3 inset-x-0 z-40 px-3 max-w-lg mx-auto pointer-events-none">
+      <div className="fixed bottom-3 inset-x-0 z-40 px-3 w-full max-w-6xl mx-auto px-4 md:px-8 pointer-events-none">
         <nav className={`rounded-[32px] px-2 py-2.5 pointer-events-auto transition-all duration-300 ${theme.glassCard}`}>
           <div className="grid grid-cols-5 gap-1">
             {[
