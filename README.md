@@ -1,5 +1,5 @@
 # Class Track
-Class Track is a simple yet detailed app for Android to track your college classes and manage your schedule.
+Class Track is a simple yet detailed app for Android, Windows, and WearOS to track your college classes and manage your schedule.
 
 ## Class Track contains all the features you need to manage your schedule:
 - Set daily times and locations for each class
