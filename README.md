@@ -37,4 +37,9 @@ Note: This app has not been tested for every device's form factor and Android ve
 
 ### Download the app:
 - Download the latest release here: https://github.com/notkoby/Class-Track/releases
+
+Android:
+[![Get it on Orion Store](https://raw.githubusercontent.com/RookieEnough/Orion-Store/refs/heads/main/assets/orion-badge.png)](https://rookieenough.github.io/Orion-Data/redirect.html?id=class-track)
+
+Windows:
 [![Get it on Orion Store](https://raw.githubusercontent.com/RookieEnough/Orion-Store/refs/heads/main/assets/orion-badge.png)](https://rookieenough.github.io/Orion-Data/redirect.html?id=class-track)
