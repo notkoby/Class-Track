@@ -24,18 +24,8 @@ Class Track is a simple yet detailed app for Android, Windows, and WearOS to tra
 
 ### Best of all, Class Track is completely free. No ads, no microtransactions.
 
-Class Track's app file is designed to be lightweight and to run smoothly on any Android device. You can view the virustotal scan here: https://www.virustotal.com/gui/file/e98518b61c271a5cf867da6fd65d8f37f4eb9fd85473e70eabb10735a342e6a7?nocache=1.
-
-Note: This app has not been tested for every device's form factor and Android version. Issues may occur depending on the device and Android version. Please report any issues.
-
-### App Screenshots:
-<img width="180" height="374" alt="IMG_20261016_154734" src="https://github.com/user-attachments/assets/b5cbac3c-a0de-404a-984f-880b4ef70d6c" />
-<img width="180" height="374" alt="IMG_20261016_154633" src="https://github.com/user-attachments/assets/d97657f5-a5bd-4ef4-8cbc-7957f7966276" />
-<img width="180" height="374" alt="IMG_20261016_154713" src="https://github.com/user-attachments/assets/e721a8c2-b57b-499e-b03c-b5bffddf9894" />
-<img width="180" height="374" alt="IMG_20261016_154702" src="https://github.com/user-attachments/assets/728e4e50-b181-4b6d-9838-b26d10cec937" />
-<img width="180" height="374" alt="IMG_20261016_154723" src="https://github.com/user-attachments/assets/ec4dc0c7-ea94-4745-af97-1e9ddfdd219c" />
 
 ### Download the app:
 - Download the latest release here: https://github.com/notkoby/Class-Track/releases
-- The Android version is also available to download via the Orion Store:
+- The Android and Windows versions are also available to download via the Orion Store:
 [![Get it on Orion Store](https://raw.githubusercontent.com/RookieEnough/Orion-Store/refs/heads/main/assets/orion-badge.png)](https://rookieenough.github.io/Orion-Data/redirect.html?id=class-track)
