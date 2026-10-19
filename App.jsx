@@ -4411,8 +4411,6 @@ export default function App() {
                       <Printer className="w-4 h-4" /> Open PDF Schedule Maker
                     </button>
                   </div>
-
-                  <GoogleCalendarExportCard courses={courses} theme={theme} />
                 </div>
               )}
 
