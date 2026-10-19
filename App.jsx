@@ -46,7 +46,28 @@ import {
   Coffee
 } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
+
+// Helper: Evaluates Combined Sub-Rules supporting optional OR toggles between sub-requirements
+function evaluateCombinedSubRules(subRules, evalFn) {
+  if (!Array.isArray(subRules) || subRules.length === 0) return false;
+  // Group consecutive sub-rules connected with isOrWithPrev === true into OR chains,
+  // or split into OR branches where any satisfied branch fulfills the requirement:
+  const branches = [];
+  let currentBranch = [];
+  subRules.forEach((sr, idx) => {
+    if (idx > 0 && sr && (sr.joinOp === 'OR' || sr.isOr)) {
+      if (currentBranch.length > 0) branches.push(currentBranch);
+      currentBranch = [sr];
+    } else {
+      currentBranch.push(sr);
+    }
+  });
+  if (currentBranch.length > 0) branches.push(currentBranch);
+  return branches.some((branch) => branch.every((sr) => evalFn(sr)));
+}
+
 import { useGitHubAutoUpdater, GitHubSettingsUpdateCard, GitHubStartupUpdateModal } from './GitHubUpdater';
+import { NextDayClassesPreview, CalendarTasksSection, AutoMarkPresentSettingCard, GenEdPathwaysCard, GoogleCalendarExportCard } from './CustomFeatures';
 import { buildDemoCloneState, AdminCloneSettingsModal } from './AdminCloneHelper';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Filesystem, Directory } from '@capacitor/filesystem';
@@ -281,6 +302,8 @@ function normalizeStudyData(raw) {
     logs: raw.logs && typeof raw.logs === 'object' ? raw.logs : {},
     vacationDays: Array.isArray(raw.vacationDays) ? raw.vacationDays : [],
     reminders: Array.isArray(raw.reminders) ? raw.reminders : [],
+    calendarTasks: Array.isArray(raw.calendarTasks) ? raw.calendarTasks : [],
+    autoMarkPresent: Boolean(raw.autoMarkPresent),
     activeTimer: raw.activeTimer && typeof raw.activeTimer === 'object' ? raw.activeTimer : null
   };
 }
@@ -643,6 +666,7 @@ export default function App() {
   const [uiStyle, setUiStyle] = useState(() => localStorage.getItem('classtrack_ui_style') || 'glassy');
   const [latePolicy, setLatePolicy] = useState(() => localStorage.getItem('classtrack_late_policy') || 'present');
   const [activeTab, setActiveTab] = useState('today');
+  const [celebratingKey, setCelebratingKey] = useState(null);
 
   const [animTrigger, setAnimTrigger] = useState(1);
   const gitHubUpdater = useGitHubAutoUpdater();
@@ -1048,6 +1072,95 @@ export default function App() {
       stopNativeLiveTimerNotification();
     }
   }, [studyData.activeTimer]);
+    // --- Auto-Mark Classes as Present After Class Ends (if enabled in Settings -> Classes) ---
+  useEffect(() => {
+    if (!studyData.autoMarkPresent) return;
+    const applyAutoPresent = () => {
+      const now = new Date();
+      const nowMins = now.getHours() * 60 + now.getMinutes();
+      const fmtDate = (d) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      };
+      const curStr = fmtDate(now);
+      let changed = false;
+      const nextAtt = { ...attendance };
+
+      (courses || []).forEach((c) => {
+        const startStr = c.startDate || curStr;
+        const startObj = new Date(`${startStr}T00:00:00`);
+        if (isNaN(startObj.getTime())) return;
+        const iter = new Date(startObj);
+        while (iter <= now) {
+          const dStr = fmtDate(iter);
+          if (!c.endDate || dStr <= c.endDate) {
+            const dow = iter.getDay();
+            (c.sections || []).forEach((s) => {
+              (s.schedule || []).forEach((slot) => {
+                if (Number(slot.day) === dow) {
+                  const key = `${c.id}_${s.id}_${dStr}`;
+                  if (!nextAtt[key]) {
+                    if (dStr < curStr) {
+                      nextAtt[key] = 'present';
+                      changed = true;
+                    } else if (dStr === curStr && slot.endTime) {
+                      const [eh, em] = String(slot.endTime).split(':').map((n) => parseInt(n, 10) || 0);
+                      if (nowMins >= eh * 60 + em) {
+                        nextAtt[key] = 'present';
+                        changed = true;
+                      }
+                    }
+                  }
+                }
+              });
+            });
+          }
+          iter.setDate(iter.getDate() + 1);
+        }
+      });
+
+      if (changed) {
+        setAttendance(nextAtt);
+      }
+    };
+
+    applyAutoPresent();
+    const id = setInterval(applyAutoPresent, 60000);
+    return () => clearInterval(id);
+  }, [studyData.autoMarkPresent, courses, attendance]);
+
+  // --- Schedule Native & Desktop Notifications for Custom Calendar Tasks ---
+  useEffect(() => {
+    const tasks = Array.isArray(studyData.calendarTasks) ? studyData.calendarTasks : [];
+    if (Capacitor.isNativePlatform()) {
+      (async () => {
+        try {
+          const toSchedule = [];
+          let notifId = 450000;
+          const nowMs = Date.now();
+          tasks.forEach((t) => {
+            if (t.completed || t.notifLeadMinutes === null || t.notifLeadMinutes < 0) return;
+            const eventDate = new Date(`${t.date}T${t.time || '12:00'}:00`);
+            if (isNaN(eventDate.getTime())) return;
+            const fireMs = eventDate.getTime() - (Number(t.notifLeadMinutes) || 0) * 60000;
+            if (fireMs > nowMs) {
+              toSchedule.push({
+                id: notifId++,
+                title: `Upcoming: ${t.title}`,
+                body: t.notifLeadMinutes === 0 ? `Starting now (${t.time})` : `Starts in ${t.notifLeadMinutes} mins${t.notes ? ' • ' + t.notes : ''}`,
+                schedule: { at: new Date(fireMs), allowWhileIdle: true }
+              });
+            }
+          });
+          if (toSchedule.length > 0) {
+            await LocalNotifications.schedule({ notifications: toSchedule });
+          }
+        } catch (e) {}
+      })();
+    }
+  }, [studyData.calendarTasks]);
   const startOrPauseTimer = async () => {
     if (timerRunning) {
       setTimerRunning(false);
@@ -3775,6 +3888,15 @@ export default function App() {
             </div>
           </div>
         )}
+              {activeTab === 'today' && (
+          <NextDayClassesPreview courses={courses} theme={theme} />
+        )}
+        {activeTab === 'calendar' && (
+          <CalendarTasksSection studyData={studyData} setStudyData={setStudyData} todayStr={todayStr} theme={theme} />
+        )}
+        {activeTab === 'gpa' && (
+          <GenEdPathwaysCard courses={courses} manualOverrides={manualOverrides} setManualOverrides={setManualOverrides} theme={theme} />
+        )}
       </main>
 
       {/* ================= STUDY REMINDER PROMPT MODAL ================= */}
@@ -4104,6 +4226,7 @@ export default function App() {
               {/* TAB 3: CALENDAR & CLASS SETTINGS (Notifications + Late Policy + PDF Schedule Maker) */}
               {settingsTab === 'classes' && (
                 <div className="space-y-4 m3-card-enter">
+                  <AutoMarkPresentSettingCard studyData={studyData} setStudyData={setStudyData} theme={theme} />
                   <div className={`p-5 rounded-[28px] space-y-4 ${theme.glassCard}`}>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
@@ -4288,6 +4411,8 @@ export default function App() {
                       <Printer className="w-4 h-4" /> Open PDF Schedule Maker
                     </button>
                   </div>
+
+                  <GoogleCalendarExportCard courses={courses} theme={theme} />
                 </div>
               )}
 
