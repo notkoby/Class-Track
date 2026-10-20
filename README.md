@@ -1,5 +1,6 @@
 # Class Track
 Class Track is a simple yet detailed app for Android, Windows, and WearOS to track your college classes and manage your schedule.
+<img width="480" height="270" alt="Classtrackfinal" src="https://github.com/user-attachments/assets/01415831-37e3-48b0-9431-01670291373e" />
 
 ## Class Track contains all the features you need to manage your schedule:
 - Set daily times and locations for each class
@@ -9,7 +10,10 @@ Class Track is a simple yet detailed app for Android, Windows, and WearOS to tra
 - Create PDFs of your schedule in a weekly view or a list view
 - Sync your data with your Google account, or create backup files to import your data to any device
 - Sync your data with your WearOS smartwatch and see your schedule, mark attendance, and start study sessions straight from your wrist!
-- _**NEW**_: Sync your data with your Windows computer and access the app through the new, smooth app!
+<img width="270" height="270" alt="Classtrackwearos" src="https://github.com/user-attachments/assets/c396e69d-ae98-455d-9e2b-3e08786638e3" />
+
+- Sync your data with your Windows computer and access the app through the new, smooth app!
+<img width="270" height="270" alt="Classtrackwindows" src="https://github.com/user-attachments/assets/20472fd2-0b63-42eb-876a-25b5dedca19a" />
 
 ## Class Track can help you study:
 - Set daily study goals and study reminders
@@ -21,12 +25,6 @@ Class Track is a simple yet detailed app for Android, Windows, and WearOS to tra
 - Class Track has light and dark modes
 - Class Track has two UI styles: an expressive style and a frosted glassy style
 - Customize how late classes are calculated for your attendance
-
-## App Screenshots:
-<img width="480" height="270" alt="Classtrackfinal" src="https://github.com/user-attachments/assets/01415831-37e3-48b0-9431-01670291373e" />
-<img width="600" height="400" alt="Classtracksync" src="https://github.com/user-attachments/assets/db496657-b410-443a-98af-13e92551e0df" />
-<img width="270" height="270" alt="Classtrackwearos" src="https://github.com/user-attachments/assets/c396e69d-ae98-455d-9e2b-3e08786638e3" />
-<img width="270" height="270" alt="Classtrackwindows" src="https://github.com/user-attachments/assets/20472fd2-0b63-42eb-876a-25b5dedca19a" />
 
 ### Best of all, Class Track is completely free. No ads, no microtransactions.
 
