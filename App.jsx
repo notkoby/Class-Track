@@ -67,7 +67,7 @@ function evaluateCombinedSubRules(subRules, evalFn) {
 }
 
 import { useGitHubAutoUpdater, GitHubSettingsUpdateCard, GitHubStartupUpdateModal } from './GitHubUpdater';
-import { NextDayClassesPreview, CalendarTasksSection, AutoMarkPresentSettingCard, GenEdPathwaysCard, GoogleCalendarExportCard } from './CustomFeatures';
+import { NextDayClassesPreview, CalendarTasksSection, AutoMarkPresentSettingCard, GenEdPathwaysCard, GoogleCalendarExportCard, ThemeSyncAndAnimationCard, GlobalUXEnhancer } from './CustomFeatures';
 import { buildDemoCloneState, AdminCloneSettingsModal } from './AdminCloneHelper';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Filesystem, Directory } from '@capacitor/filesystem';
@@ -304,6 +304,9 @@ function normalizeStudyData(raw) {
     reminders: Array.isArray(raw.reminders) ? raw.reminders : [],
     calendarTasks: Array.isArray(raw.calendarTasks) ? raw.calendarTasks : [],
     autoMarkPresent: Boolean(raw.autoMarkPresent),
+    syncedThemeConfig: raw.syncedThemeConfig || null,
+    syncUiSettings: typeof raw.syncUiSettings === "boolean" ? raw.syncUiSettings : false,
+    funAnimations: typeof raw.funAnimations === "boolean" ? raw.funAnimations : true,
     activeTimer: raw.activeTimer && typeof raw.activeTimer === 'object' ? raw.activeTimer : null
   };
 }
@@ -2526,6 +2529,7 @@ export default function App() {
       {/* Main Content Container */}
       <main className="relative z-10 px-4 w-full max-w-6xl mx-auto px-4 md:px-8 space-y-6 mt-5">
         {/* ================= TODAY TAB ================= */}
+        <GlobalUXEnhancer studyData={studyData} setStudyData={setStudyData} theme={theme} />
         {activeTab === 'today' && (
           <div key={`today_${uiStyle}_${animTrigger}`} className="space-y-6 m3-card-enter">
             {!notifGranted && classNotifConfig.enabled && (
@@ -3889,7 +3893,7 @@ export default function App() {
           </div>
         )}
               {activeTab === 'today' && (
-          <NextDayClassesPreview courses={courses} theme={theme} />
+          <NextDayClassesPreview courses={courses} studyData={studyData} setStudyData={setStudyData} theme={theme} />
         )}
         {activeTab === 'calendar' && (
           <CalendarTasksSection studyData={studyData} setStudyData={setStudyData} todayStr={todayStr} theme={theme} />
