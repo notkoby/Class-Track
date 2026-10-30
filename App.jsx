@@ -1,3 +1,5 @@
+
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Calendar as CalendarIcon,
@@ -1608,13 +1610,73 @@ export default function App() {
         });
       }
 
+      // Schedule Custom Tasks & Events Notifications
+      const tasks = Array.isArray(currentStudyData?.calendarTasks) ? currentStudyData.calendarTasks : [];
+      tasks.forEach((task) => {
+        if (!task || task.completed || !task.date || !task.time) return;
+        try {
+          const [year, month, day] = task.date.split('-').map(Number);
+          const [hours, minutes] = task.time.split(':').map(Number);
+          const taskTriggerTime = new Date(year, month - 1, day, hours, minutes, 0, 0);
+          if (taskTriggerTime > now) {
+            let taskHash = 20000;
+            const strId = String(task.id || task.title);
+            for (let i = 0; i < strId.length; i++) {
+              taskHash = ((taskHash << 5) - taskHash) + strId.charCodeAt(i);
+              taskHash |= 0;
+            }
+            const taskIdNum = Math.abs(taskHash) % 1000000000 + 50000;
+
+            notifications.push({
+              id: taskIdNum,
+              title: `Task: ${task.title}`,
+              body: `${task.notes ? task.notes + ' • ' : ''}Scheduled for ${formatTime12h(task.time)}`,
+              channelId: 'class-reminders',
+              schedule: { at: taskTriggerTime, allowWhileIdle: true }
+            });
+          }
+        } catch (err) {}
+      });
+
       if (notifications.length > 0) await LocalNotifications.schedule({ notifications });
     } catch (e) {}
   };
 
   useEffect(() => {
     if (notifGranted) syncNotificationsWithOS(courses, attendance, studyData, classNotifConfig);
-  }, [courses, attendance, studyData.reminders, classNotifConfig, notifGranted]);
+  }, [courses, attendance, studyData, classNotifConfig, notifGranted]);
+
+  // Web / Windows Desktop Notification Scheduler for Custom Tasks
+  useEffect(() => {
+    if (Capacitor.isNativePlatform() || typeof window === 'undefined' || !('Notification' in window) || Notification.permission !== 'granted') return;
+    const tasks = Array.isArray(studyData?.calendarTasks) ? studyData.calendarTasks : [];
+    const nowMs = Date.now();
+    const timers = [];
+
+    tasks.forEach((task) => {
+      if (!task || task.completed || !task.date || !task.time) return;
+      try {
+        const [year, month, day] = task.date.split('-').map(Number);
+        const [hours, minutes] = task.time.split(':').map(Number);
+        const taskTimeMs = new Date(year, month - 1, day, hours, minutes, 0, 0).getTime();
+        const diffMs = taskTimeMs - nowMs;
+
+        if (diffMs > 0 && diffMs < 86400000 * 14) { // within 14 days
+          const timerId = setTimeout(() => {
+            try {
+              new Notification(`Task: ${task.title}`, {
+                body: `${task.notes ? task.notes + ' • ' : ''}Scheduled for ${formatTime12h(task.time)}`,
+                icon: '/favicon.svg'
+              });
+            } catch (err) {}
+          }, diffMs);
+          timers.push(timerId);
+        }
+      } catch (err) {}
+    });
+
+    return () => timers.forEach(clearTimeout);
+  }, [studyData?.calendarTasks]);
 
   const requestNotificationAccess = async () => {
     if (Capacitor.isNativePlatform()) {
@@ -1941,6 +2003,8 @@ export default function App() {
         }
 
         // Only import timer durations & reminders; strictly keep existing local/cloud streak logs & vacationDays
+
+
         const incomingStudy = parsed.studyPreferences || parsed.studyData;
         if (incomingStudy && typeof incomingStudy === 'object') {
           setStudyData((prev) => ({
@@ -2317,7 +2381,7 @@ export default function App() {
 
   return (
     <div
-      className={`min-h-screen pb-40 transition-colors duration-500 font-sans relative overflow-x-hidden ${theme.bg} ${
+      className={`min-h-screen pb-4 transition-colors duration-500 font-sans relative overflow-x-hidden ${theme.bg} ${
         isGlassy ? 'mode-glassy' : 'mode-expressive'
       }`}
       style={{ paddingTop: 'env(safe-area-inset-top, 26px)' }}
@@ -4038,7 +4102,7 @@ export default function App() {
               {/* TAB 1: SYNC SETTINGS (Google Cloud + JSON File Backup) */}
               {settingsTab === 'sync' && (
                 <div className="space-y-4 m3-card-enter">
-                  {cloudUser?.email?.toLowerCase()?.trim() === '' && (
+                  {(String(cloudUser?.email || '').trim().toLowerCase() === '') && (
                     <div className={`p-5 rounded-[28px] space-y-3 border-2 border-amber-500/40 ${theme.glassCard}`}>
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-extrabold uppercase tracking-wider text-amber-500">
