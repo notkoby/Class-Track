@@ -4,7 +4,7 @@ Class Track is a simple yet detailed app for Android, Windows, and WearOS to tra
 <img width="480" height="270" alt="Classtrackfinal" src="https://github.com/user-attachments/assets/01415831-37e3-48b0-9431-01670291373e" />
 
 ## Download the latest release:
-Android- [v7.7](https://github.com/notkoby/Class-Track/releases/tag/v7.7)
+Android- [v7.8](https://github.com/notkoby/Class-Track/releases/tag/v7.8)
 
 Windows- [v7.7](https://github.com/notkoby/Class-Track/releases/tag/v7.7)
 
