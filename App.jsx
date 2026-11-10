@@ -70,12 +70,15 @@ function evaluateCombinedSubRules(subRules, evalFn) {
 
 import { useGitHubAutoUpdater, GitHubSettingsUpdateCard, GitHubStartupUpdateModal } from './GitHubUpdater';
 import { NextDayClassesPreview, CalendarTasksSection, AutoMarkPresentSettingCard, GenEdPathwaysCard, GoogleCalendarExportCard, ThemeSyncAndAnimationCard, GlobalUXEnhancer } from './CustomFeatures';
+import { recordFocusSessionSeconds, triggerHapticFeedback, ProFeaturesSettingsExtension } from './ProFeaturesSuite';
 import { buildDemoCloneState, AdminCloneSettingsModal } from './AdminCloneHelper';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { StatusBar, Style } from '@capacitor/status-bar';
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
+import { isWindowsDesktop } from './platformUtils';
+
 import { initializeApp } from 'firebase/app';
 import {
   getAuth,
@@ -214,6 +217,7 @@ const DEFAULT_STUDY_DATA = {
 
 const DEFAULT_CLASS_NOTIF_CONFIG = {
   enabled: true,
+  countdownEnabled: true,
   leadMinutes: [30]
 };
 
@@ -316,6 +320,12 @@ function normalizeStudyData(raw) {
 function normalizeClassNotifConfig(raw) {
   if (!raw || typeof raw !== 'object') return DEFAULT_CLASS_NOTIF_CONFIG;
   const enabled = typeof raw.enabled === 'boolean' ? raw.enabled : true;
+  const countdownEnabled =
+    typeof raw.countdownEnabled === 'boolean'
+      ? raw.countdownEnabled
+      : typeof raw.liveCountdown === 'boolean'
+      ? raw.liveCountdown
+      : true;
   const rawList = Array.isArray(raw.leadMinutes) ? raw.leadMinutes : [30];
   const cleaned = Array.from(
     new Set(
@@ -326,6 +336,7 @@ function normalizeClassNotifConfig(raw) {
   ).sort((a, b) => a - b);
   return {
     enabled,
+    countdownEnabled,
     leadMinutes: cleaned.length > 0 ? cleaned : [30]
   };
 }
@@ -816,9 +827,47 @@ export default function App() {
   useEffect(() => { localStorage.setItem('unitrack_theme', darkMode ? 'dark' : 'light'); }, [darkMode]);
   useEffect(() => { localStorage.setItem('classtrack_ui_style', uiStyle); }, [uiStyle]);
   useEffect(() => { localStorage.setItem('classtrack_late_policy', latePolicy); }, [latePolicy]);
-  useEffect(() => { localStorage.setItem('classtrack_class_notifs_v1', JSON.stringify(classNotifConfig)); }, [classNotifConfig]);
+  useEffect(() => {
+    localStorage.setItem('classtrack_class_notifs_v1', JSON.stringify(classNotifConfig));
+    localStorage.setItem('ct_live_class_countdown', classNotifConfig.countdownEnabled !== false ? 'true' : 'false');
+    if (Array.isArray(classNotifConfig.leadMinutes) && classNotifConfig.leadMinutes.length > 0) {
+      const firstLead = Math.max(...classNotifConfig.leadMinutes);
+      localStorage.setItem('ct_class_lead_minutes', String(firstLead));
+    }
+  }, [classNotifConfig]);
   useEffect(() => { localStorage.setItem('unitrack_courses_v2', JSON.stringify(courses)); }, [courses]);
-  useEffect(() => { localStorage.setItem('unitrack_attendance_v2', JSON.stringify(attendance)); }, [attendance]);
+  useEffect(() => {
+    localStorage.setItem('unitrack_attendance_v2', JSON.stringify(attendance));
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('ct_attendance_updated', { detail: { attendance } }));
+      }
+    } catch (_) {}
+  }, [attendance]);
+  useEffect(() => {
+    const onNativeAttendance = (e) => {
+      const detail = e.detail || {};
+      const { courseId, sectionId, courseTitle, status, dateStr } = detail;
+      if (!status) return;
+
+      const targetDate = dateStr || new Date().toISOString().slice(0, 10);
+      const lowerStatus = status.toLowerCase();
+
+      setAttendance((prev) => {
+        const next = { ...prev };
+        if (courseId && sectionId) next[`${courseId}_${sectionId}_${targetDate}`] = lowerStatus;
+        if (courseId) next[`${courseId}_${targetDate}`] = lowerStatus;
+        if (courseTitle) next[`${courseTitle}_${targetDate}`] = lowerStatus;
+        try {
+          localStorage.setItem('unitrack_attendance_v2', JSON.stringify(next));
+        } catch (_) {}
+        return next;
+      });
+    };
+
+    window.addEventListener('ct_native_attendance_action', onNativeAttendance);
+    return () => window.removeEventListener('ct_native_attendance_action', onNativeAttendance);
+  }, []);
   useEffect(() => { localStorage.setItem('unitrack_geneds_v2', JSON.stringify(genEds)); }, [genEds]);
   useEffect(() => { localStorage.setItem('unitrack_overrides', JSON.stringify(manualOverrides)); }, [manualOverrides]);
   useEffect(() => { localStorage.setItem('classtrack_study_v1', JSON.stringify(studyData)); }, [studyData]);
@@ -954,6 +1003,9 @@ export default function App() {
     }
     if (Capacitor.isNativePlatform()) {
       try {
+        if (Capacitor.Plugins?.LiveTimer?.stopTimer) {
+          Capacitor.Plugins.LiveTimer.stopTimer();
+        }
         await LocalNotifications.cancel({ notifications: [{ id: LIVE_TIMER_NOTIF_ID }] });
       } catch (e) {}
     }
@@ -1001,6 +1053,10 @@ export default function App() {
               [todayStr]: (Number(prev.logs?.[todayStr]) || 0) + completedMinutes
             }
           }));
+
+          recordFocusSessionSeconds(timerTotalSeconds, 'Focus Session');
+          triggerHapticFeedback('study_complete');
+          window.dispatchEvent(new CustomEvent('ct_focus_session_completed', { detail: { durationSeconds: timerTotalSeconds } }));
 
           if (typeof window !== 'undefined' && window.AndroidLiveTimer) {
             try {
@@ -1136,42 +1192,27 @@ export default function App() {
     return () => clearInterval(id);
   }, [studyData.autoMarkPresent, courses, attendance]);
 
-  // --- Schedule Native & Desktop Notifications for Custom Calendar Tasks ---
-  useEffect(() => {
-    const tasks = Array.isArray(studyData.calendarTasks) ? studyData.calendarTasks : [];
-    if (Capacitor.isNativePlatform()) {
-      (async () => {
-        try {
-          const toSchedule = [];
-          let notifId = 450000;
-          const nowMs = Date.now();
-          tasks.forEach((t) => {
-            if (t.completed || t.notifLeadMinutes === null || t.notifLeadMinutes < 0) return;
-            const eventDate = new Date(`${t.date}T${t.time || '12:00'}:00`);
-            if (isNaN(eventDate.getTime())) return;
-            const fireMs = eventDate.getTime() - (Number(t.notifLeadMinutes) || 0) * 60000;
-            if (fireMs > nowMs) {
-              toSchedule.push({
-                id: notifId++,
-                title: `Upcoming: ${t.title}`,
-                body: t.notifLeadMinutes === 0 ? `Starting now (${t.time})` : `Starts in ${t.notifLeadMinutes} mins${t.notes ? ' • ' + t.notes : ''}`,
-                schedule: { at: new Date(fireMs), allowWhileIdle: true }
-              });
-            }
-          });
-          if (toSchedule.length > 0) {
-            await LocalNotifications.schedule({ notifications: toSchedule });
-          }
-        } catch (e) {}
-      })();
-    }
-  }, [studyData.calendarTasks]);
+  // --- Schedule Native & Desktop Notifications for Custom Calendar Tasks handled cleanly via syncNotificationsWithOS ---
   const startOrPauseTimer = async () => {
     if (timerRunning) {
       setTimerRunning(false);
       timerTargetEndMsRef.current = null;
       lastPostedQuarterRef.current = -1;
       await stopNativeLiveTimerNotification();
+      const activeObj = {
+        running: false,
+        remainingSeconds: timerSecondsLeft,
+        totalSeconds: timerTotalSeconds,
+        mode: timerMode,
+        phase: pomoPhase,
+        topic: studyTopic || '',
+        updatedAt: Date.now()
+      };
+      lastRemoteTimerStampRef.current = activeObj.updatedAt;
+      setStudyData((prev) => ({ ...prev, activeTimer: activeObj }));
+      if (cloudUser) {
+        set(ref(firebaseDb, `users/${cloudUser.uid}/studyData/activeTimer`), activeObj).catch(() => {});
+      }
     } else {
       if (!notifGranted && Capacitor.isNativePlatform()) {
         try {
@@ -1184,6 +1225,21 @@ export default function App() {
       timerTargetEndMsRef.current = targetEndMs;
       lastPostedQuarterRef.current = 0;
       setTimerRunning(true);
+      const activeObj = {
+        running: true,
+        targetEndMs,
+        totalSeconds: timerTotalSeconds,
+        remainingSeconds: secs,
+        mode: timerMode,
+        phase: pomoPhase,
+        topic: studyTopic || '',
+        updatedAt: Date.now()
+      };
+      lastRemoteTimerStampRef.current = activeObj.updatedAt;
+      setStudyData((prev) => ({ ...prev, activeTimer: activeObj }));
+      if (cloudUser) {
+        set(ref(firebaseDb, `users/${cloudUser.uid}/studyData/activeTimer`), activeObj).catch(() => {});
+      }
       await startNativeLiveTimerNotification(
         targetEndMs,
         timerMode === 'pomodoro' && pomoPhase === 'break',
@@ -1198,15 +1254,31 @@ export default function App() {
     lastPostedQuarterRef.current = -1;
     stopNativeLiveTimerNotification();
 
+    let secs = 1500;
     if (customMode === 'pomodoro') {
       const mins = customPhase === 'break' ? customStudy.pomoBreakMins : customStudy.pomoWorkMins;
-      const secs = Math.max(1, Number(mins) || 25) * 60;
+      secs = Math.max(1, Number(mins) || 25) * 60;
       setTimerTotalSeconds(secs);
       setTimerSecondsLeft(secs);
     } else {
-      const secs = Math.max(1, Number(customStudy.normalMins) || 45) * 60;
+      secs = Math.max(1, Number(customStudy.normalMins) || 45) * 60;
       setTimerTotalSeconds(secs);
       setTimerSecondsLeft(secs);
+    }
+
+    const activeObj = {
+      running: false,
+      remainingSeconds: secs,
+      totalSeconds: secs,
+      mode: customMode,
+      phase: customPhase,
+      topic: studyTopic || '',
+      updatedAt: Date.now()
+    };
+    lastRemoteTimerStampRef.current = activeObj.updatedAt;
+    setStudyData((prev) => ({ ...prev, activeTimer: activeObj }));
+    if (cloudUser) {
+      set(ref(firebaseDb, `users/${cloudUser.uid}/studyData/activeTimer`), activeObj).catch(() => {});
     }
   };
 
@@ -1258,7 +1330,16 @@ export default function App() {
     if (data.updatedAt) lastSyncedStampRef.current = data.updatedAt;
 
     if (Array.isArray(data.courses)) setCourses(normalizeCourses(data.courses));
-    if (data.attendance && typeof data.attendance === 'object') setAttendance(data.attendance);
+    if (data.attendance && typeof data.attendance === 'object') {
+      const remoteAtt = data.attendance;
+      setAttendance((prev) => {
+        const merged = { ...prev, ...remoteAtt };
+        try {
+          localStorage.setItem('unitrack_attendance_v2', JSON.stringify(merged));
+        } catch (_) {}
+        return merged;
+      });
+    }
     if (Array.isArray(data.genEds)) setGenEds(normalizeGenEds(data.genEds));
     if (data.manualOverrides && typeof data.manualOverrides === 'object') {
       setManualOverrides({
@@ -1418,8 +1499,16 @@ export default function App() {
     } catch (e) {}
   };
 
-  // --- Full Edge-to-Edge Status Bar Integration ---
+  // --- Full Edge-to-Edge Status Bar Integration & Theme Accent Initialization ---
   useEffect(() => {
+    const activeSeason = localStorage.getItem('ct_seasonal_theme') || 'none';
+    if (activeSeason === 'none') {
+      const savedAccent = localStorage.getItem('ct_accent_color') || 'violet';
+      document.documentElement.setAttribute('data-accent', savedAccent);
+    } else {
+      document.documentElement.removeAttribute('data-accent');
+    }
+
     const bgHex = darkMode
       ? uiStyle === 'glassy'
         ? '#070510'
@@ -1558,6 +1647,15 @@ export default function App() {
         await LocalNotifications.cancel({ notifications: nonLivePending });
       }
 
+      // Also clean up legacy sequential task IDs (450000-450100) to clear any orphaned task alarms
+      const legacyIds = [];
+      for (let id = 450000; id < 450100; id++) {
+        legacyIds.push({ id });
+      }
+      try {
+        await LocalNotifications.cancel({ notifications: legacyIds });
+      } catch (e) {}
+
       // If user disabled class notifications in Settings, stop here after clearing pending class alerts
       if (!currentClassNotif?.enabled) return;
 
@@ -1610,15 +1708,77 @@ export default function App() {
         });
       }
 
+      // Schedule Exact Hardware Alarms for Live Class Countdown Alerts
+      if (currentClassNotif?.enabled && currentClassNotif?.countdownEnabled !== false) {
+        try {
+          const firstLeadMin = Math.max(...leadTimes);
+          const exactTriggers = [];
+
+          for (let dayOffset = 0; dayOffset < 14; dayOffset++) {
+            const targetDate = new Date(now);
+            targetDate.setDate(now.getDate() + dayOffset);
+            const dateStr = toLocalDateString(targetDate);
+            const dayOfWeek = targetDate.getDay();
+
+            currentCourses.forEach((course) => {
+              if (course.startDate && dateStr < course.startDate) return;
+              if (course.endDate && dateStr > course.endDate) return;
+
+              (course.sections || []).forEach((section) => {
+                const sessionKey = `${course.id}_${section.id}_${dateStr}`;
+                const legacyKey = `${course.id}_${dateStr}`;
+                if (currentAttendance[sessionKey] || currentAttendance[legacyKey]) return;
+
+                (section.schedule || []).forEach((slot) => {
+                  if (Number(slot.day) !== dayOfWeek || !slot.startTime) return;
+                  const [hours, minutes] = slot.startTime.split(':').map(Number);
+                  const classStart = new Date(targetDate);
+                  classStart.setHours(hours, minutes, 0, 0);
+
+                  const triggerTime = new Date(classStart.getTime() - Number(firstLeadMin) * 60 * 1000);
+                  if (triggerTime > now) {
+                    const secNumber = section.sectionNumber ? (String(section.sectionNumber).startsWith('0') ? section.sectionNumber : `0${section.sectionNumber}`) : '';
+                    const secLabel = section.type ? `${section.type}${secNumber ? ' ' + secNumber : ''}` : (secNumber ? `Sec ${secNumber}` : '');
+                    const fullTitle = course.code + (secLabel ? ` (${secLabel})` : '');
+                    const fullSubtitle = (course.title ? course.title + ' • ' : '') + (slot.room ? 'Room ' + slot.room : 'Class Reminder');
+
+                    exactTriggers.push({
+                      triggerMs: triggerTime.getTime(),
+                      classStartMs: classStart.getTime(),
+                      courseId: String(course.id),
+                      sectionId: String(section.id || ''),
+                      dateStr,
+                      title: fullTitle,
+                      subtitle: fullSubtitle,
+                      maxSeconds: Number(firstLeadMin) * 60
+                    });
+                  }
+                });
+              });
+            });
+          }
+
+          if (Capacitor.Plugins?.LiveTimer?.scheduleExactClassAlarms) {
+            Capacitor.Plugins.LiveTimer.scheduleExactClassAlarms({ triggers: exactTriggers });
+          }
+        } catch (e) {}
+      }
+
       // Schedule Custom Tasks & Events Notifications
       const tasks = Array.isArray(currentStudyData?.calendarTasks) ? currentStudyData.calendarTasks : [];
       tasks.forEach((task) => {
         if (!task || task.completed || !task.date || !task.time) return;
         try {
+          const leadMin = task.notifLeadMinutes !== undefined && task.notifLeadMinutes !== null ? Number(task.notifLeadMinutes) : 15;
+          if (leadMin < 0) return; // Notification disabled for this task
+
           const [year, month, day] = task.date.split('-').map(Number);
           const [hours, minutes] = task.time.split(':').map(Number);
-          const taskTriggerTime = new Date(year, month - 1, day, hours, minutes, 0, 0);
-          if (taskTriggerTime > now) {
+          const taskTime = new Date(year, month - 1, day, hours, minutes, 0, 0);
+          const taskTriggerTime = new Date(taskTime.getTime() - leadMin * 60000);
+
+          // Strictly ensure BOTH triggerTime and taskTime are in the future and task is NOT completed
+          if (taskTriggerTime > now && taskTime > now) {
             let taskHash = 20000;
             const strId = String(task.id || task.title);
             for (let i = 0; i < strId.length; i++) {
@@ -1627,10 +1787,14 @@ export default function App() {
             }
             const taskIdNum = Math.abs(taskHash) % 1000000000 + 50000;
 
+            const bodyText = leadMin === 0
+              ? `Starting now (${formatTime12h(task.time)})${task.notes ? ' • ' + task.notes : ''}`
+              : `Starts in ${leadMin}m (${formatTime12h(task.time)})${task.notes ? ' • ' + task.notes : ''}`;
+
             notifications.push({
               id: taskIdNum,
               title: `Task: ${task.title}`,
-              body: `${task.notes ? task.notes + ' • ' : ''}Scheduled for ${formatTime12h(task.time)}`,
+              body: bodyText,
               channelId: 'class-reminders',
               schedule: { at: taskTriggerTime, allowWhileIdle: true }
             });
@@ -1794,13 +1958,23 @@ export default function App() {
   };
 
   const markSessionAttendance = (sessionKey, newStatus) => {
+    triggerHapticFeedback('attendance');
     setAttendance((prev) => {
       const current = prev[sessionKey];
       const updated = { ...prev };
       if (current === newStatus) delete updated[sessionKey];
       else updated[sessionKey] = newStatus;
+      try {
+        localStorage.setItem('unitrack_attendance_v2', JSON.stringify(updated));
+      } catch (_) {}
       return updated;
     });
+    try {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('ct_attendance_updated', { detail: { sessionKey, newStatus } }));
+        stopNativeLiveTimerNotification();
+      }
+    } catch (_) {}
   };
 
   const attendanceSummary = useMemo(() => {
@@ -2347,16 +2521,10 @@ export default function App() {
       : 'bg-white border border-[#E7E0EC]',
     subtext: darkMode ? 'text-[#CCC4DC]' : 'text-[#4E465E]',
     border: darkMode ? 'border-white/15' : 'border-indigo-950/10',
-    primaryPill: darkMode
-      ? 'bg-[#D0BCFF] text-[#32186A] shadow-md shadow-purple-950/30'
-      : 'bg-[#6347A6] text-white shadow-md shadow-indigo-900/20',
+    primaryPill: 'ct-primary-pill bg-violet-600 text-white shadow-md shadow-violet-950/30',
     tonalPill: isGlassy
-      ? darkMode
-        ? 'bg-purple-500/30 text-purple-100 border border-purple-300/30 backdrop-blur-md'
-        : 'bg-purple-500/20 text-[#260868] border border-white/80 backdrop-blur-md'
-      : darkMode
-      ? 'bg-[#4A3582] text-[#EADDFF]'
-      : 'bg-[#E8DDFF] text-[#23065E]'
+      ? 'ct-tonal-pill bg-violet-500/20 text-violet-300 border border-violet-400/30 backdrop-blur-md'
+      : 'ct-tonal-pill bg-violet-500/20 text-violet-300 border border-violet-400/30'
   };
 
   const getColorStyle = (colorId) => {
@@ -2384,7 +2552,7 @@ export default function App() {
       className={`min-h-screen pb-4 transition-colors duration-500 font-sans relative overflow-x-hidden ${theme.bg} ${
         isGlassy ? 'mode-glassy' : 'mode-expressive'
       }`}
-      style={{ paddingTop: 'env(safe-area-inset-top, 26px)' }}
+      style={{ paddingTop: 'calc(env(safe-area-inset-top, 16px) + 4px)' }}
     >
       <ConfettiCanvas active={confettiActive} />
       <GitHubStartupUpdateModal updater={gitHubUpdater} theme={theme} />
@@ -2563,7 +2731,7 @@ export default function App() {
       {/* ================= FLOATING ROUNDED TOP APP BAR ================= */}
       <div
         key={`hdr_${uiStyle}_${animTrigger}`}
-        className={`sticky top-3 z-30 px-4 pt-3 pb-2 w-full max-w-6xl mx-auto px-4 md:px-8 ${
+        className={`sticky top-1 z-30 px-4 pt-1 pb-2 w-full max-w-6xl mx-auto px-4 md:px-8 ${
           isGlassy ? 'app-launch-glass' : 'app-launch-expressive'
         }`}
       >
@@ -2596,7 +2764,7 @@ export default function App() {
         <GlobalUXEnhancer studyData={studyData} setStudyData={setStudyData} theme={theme} />
         {activeTab === 'today' && (
           <div key={`today_${uiStyle}_${animTrigger}`} className="space-y-6 m3-card-enter">
-            {!notifGranted && classNotifConfig.enabled && (
+            {!notifGranted && classNotifConfig.enabled && !isWindowsDesktop() && (
               <div className={`p-5 rounded-[32px] ${theme.glassCard} flex items-center justify-between gap-3`}>
                 <div className="flex items-center gap-3.5">
                   <div className={`p-3.5 rounded-full ${theme.tonalPill}`}>
@@ -4287,6 +4455,8 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+
+                    <ProFeaturesSettingsExtension theme={theme} />
                   </div>
                 </div>
               )}
@@ -4295,126 +4465,156 @@ export default function App() {
               {settingsTab === 'classes' && (
                 <div className="space-y-4 m3-card-enter">
                   <AutoMarkPresentSettingCard studyData={studyData} setStudyData={setStudyData} theme={theme} />
-                  <div className={`p-5 rounded-[28px] space-y-4 ${theme.glassCard}`}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Bell className="w-4 h-4" />
-                        <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
-                          Class Notifications
-                        </h3>
+                  {!isWindowsDesktop() && (
+                    <div className={`p-5 rounded-[28px] space-y-4 ${theme.glassCard}`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Bell className="w-4 h-4" />
+                          <h3 className="font-extrabold text-sm uppercase tracking-wider opacity-80">
+                            Class Notifications
+                          </h3>
+                        </div>
+                        <span
+                          className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${
+                            classNotifConfig.enabled
+                              ? 'bg-emerald-500/20 text-emerald-500'
+                              : 'bg-slate-500/20 text-slate-400'
+                          }`}
+                        >
+                          {classNotifConfig.enabled ? 'Enabled' : 'Disabled'}
+                        </span>
                       </div>
-                      <span
-                        className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${
-                          classNotifConfig.enabled
-                            ? 'bg-emerald-500/20 text-emerald-500'
-                            : 'bg-slate-500/20 text-slate-400'
-                        }`}
-                      >
-                        {classNotifConfig.enabled ? 'Enabled' : 'Disabled'}
-                      </span>
-                    </div>
 
-                    <p className={`text-xs ${theme.subtext}`}>
-                      Choose whether to receive push notifications before classes, and select one or multiple reminder times (default is 30m before).
-                    </p>
+                      <p className={`text-xs ${theme.subtext}`}>
+                        Choose whether to receive push notifications before classes, and select one or multiple reminder times (default is 30m before).
+                      </p>
 
-                    <div className={`p-1.5 rounded-full grid grid-cols-2 gap-2 ${theme.surfaceElevated}`}>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (!notifGranted) await requestNotificationAccess();
-                          setClassNotifConfig((prev) => ({ ...prev, enabled: true }));
-                        }}
-                        className={`w-full py-2.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${
-                          classNotifConfig.enabled ? theme.primaryPill : theme.subtext
-                        }`}
-                      >
-                        <Bell className="w-3.5 h-3.5" />
-                        <span>Notifications On</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setClassNotifConfig((prev) => ({ ...prev, enabled: false }))}
-                        className={`w-full py-2.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${
-                          !classNotifConfig.enabled ? theme.primaryPill : theme.subtext
-                        }`}
-                      >
-                        <Ban className="w-3.5 h-3.5" />
-                        <span>Notifications Off</span>
-                      </button>
-                    </div>
+                      <div className={`p-1.5 rounded-full grid grid-cols-2 gap-2 ${theme.surfaceElevated}`}>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!notifGranted) await requestNotificationAccess();
+                            setClassNotifConfig((prev) => ({ ...prev, enabled: true }));
+                          }}
+                          className={`w-full py-2.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${
+                            classNotifConfig.enabled ? theme.primaryPill : theme.subtext
+                          }`}
+                        >
+                          <Bell className="w-3.5 h-3.5" />
+                          <span>Notifications On</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setClassNotifConfig((prev) => ({ ...prev, enabled: false }))}
+                          className={`w-full py-2.5 px-3 rounded-full text-xs font-extrabold flex items-center justify-center gap-1.5 m3-btn ${
+                            !classNotifConfig.enabled ? theme.primaryPill : theme.subtext
+                          }`}
+                        >
+                          <Ban className="w-3.5 h-3.5" />
+                          <span>Notifications Off</span>
+                        </button>
+                      </div>
 
-                    {classNotifConfig.enabled && (
-                      <div className="space-y-3 pt-1">
-                        <div>
-                          <label className={`block text-[11px] font-bold mb-2 ${theme.subtext}`}>
-                            Active Alert Times Before Class (Tap to toggle multiple):
-                          </label>
-                          <div className="flex flex-wrap gap-1.5">
-                            {CLASS_NOTIF_PRESETS.map((mins) => {
-                              const isSelected = (classNotifConfig.leadMinutes || [30]).includes(mins);
-                              return (
-                                <button
-                                  key={mins}
-                                  type="button"
-                                  onClick={() => toggleClassLeadMinute(mins)}
-                                  className={`px-3.5 py-2 rounded-full text-xs font-extrabold m3-btn ${
-                                    isSelected ? theme.primaryPill : theme.surfaceElevated
-                                  }`}
-                                >
-                                  {mins}m before
-                                </button>
-                              );
-                            })}
+                      {classNotifConfig.enabled && (
+                        <div className="space-y-3 pt-1">
+                          <div className={`p-3.5 rounded-2xl flex items-center justify-between gap-3 ${theme.surfaceElevated}`}>
+                            <div className="space-y-0.5">
+                              <div className="flex items-center gap-1.5 text-xs font-extrabold">
+                                <Clock className="w-4 h-4 text-emerald-500 shrink-0" />
+                                <span>Live Class Countdown Alert</span>
+                              </div>
+                              <p className={`text-[10px] leading-relaxed ${theme.subtext}`}>
+                                Displays a dynamic live countdown in your status bar / Dynamic Island with Present, Late &amp; Absent buttons starting from your first notification before class.
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setClassNotifConfig((prev) => ({
+                                  ...prev,
+                                  countdownEnabled: prev.countdownEnabled === false
+                                }));
+                              }}
+                              className={`px-3.5 py-2 rounded-full text-xs font-extrabold shrink-0 m3-btn ${
+                                classNotifConfig.countdownEnabled !== false
+                                  ? 'bg-emerald-600 text-white'
+                                  : theme.surfaceElevated
+                              }`}
+                            >
+                              {classNotifConfig.countdownEnabled !== false ? 'Countdown On' : 'Countdown Off'}
+                            </button>
                           </div>
-                        </div>
 
-                        <div className="flex items-center gap-2 pt-1">
-                          <input
-                            type="number"
-                            min="1"
-                            max="1440"
-                            placeholder="Custom mins before (e.g. 20)..."
-                            value={customClassLeadInput}
-                            onChange={(e) => setCustomClassLeadInput(e.target.value)}
-                            className={`flex-1 px-4 py-2.5 rounded-full text-xs font-extrabold outline-none ${theme.surfaceElevated}`}
-                          />
-                          <button
-                            type="button"
-                            onClick={addCustomClassLeadMinute}
-                            className={`px-4 py-2.5 rounded-full text-xs font-extrabold shrink-0 m3-btn ${theme.tonalPill}`}
-                          >
-                            + Add Alert
-                          </button>
-                        </div>
-
-                        <div className={`p-3.5 rounded-2xl space-y-2 ${theme.surfaceElevated}`}>
-                          <span className={`block text-[10px] font-extrabold uppercase tracking-wider ${theme.subtext}`}>
-                            Your Scheduled Alerts Per Class ({(classNotifConfig.leadMinutes || [30]).length}):
-                          </span>
-                          <div className="flex flex-wrap gap-2">
-                            {(classNotifConfig.leadMinutes || [30]).map((mins) => (
-                              <span
-                                key={mins}
-                                className={`px-3 py-1 rounded-full text-xs font-extrabold flex items-center gap-1.5 ${theme.tonalPill}`}
-                              >
-                                <span>{mins} mins before</span>
-                                {(classNotifConfig.leadMinutes || []).length > 1 && (
+                          <div>
+                            <label className={`block text-[11px] font-bold mb-2 ${theme.subtext}`}>
+                              Active Alert Times Before Class (Tap to toggle multiple):
+                            </label>
+                            <div className="flex flex-wrap gap-1.5">
+                              {CLASS_NOTIF_PRESETS.map((mins) => {
+                                const isSelected = (classNotifConfig.leadMinutes || [30]).includes(mins);
+                                return (
                                   <button
+                                    key={mins}
                                     type="button"
-                                    onClick={() => removeClassLeadMinute(mins)}
-                                    className="text-rose-500 hover:opacity-80"
+                                    onClick={() => toggleClassLeadMinute(mins)}
+                                    className={`px-3.5 py-2 rounded-full text-xs font-extrabold m3-btn ${
+                                      isSelected ? theme.primaryPill : theme.surfaceElevated
+                                    }`}
                                   >
-                                    <X className="w-3.5 h-3.5" />
+                                    {mins}m before
                                   </button>
-                                )}
-                              </span>
-                            ))}
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 pt-1">
+                            <input
+                              type="number"
+                              min="1"
+                              max="1440"
+                              placeholder="Custom mins before (e.g. 20)..."
+                              value={customClassLeadInput}
+                              onChange={(e) => setCustomClassLeadInput(e.target.value)}
+                              className={`flex-1 px-4 py-2.5 rounded-full text-xs font-extrabold outline-none ${theme.surfaceElevated}`}
+                            />
+                            <button
+                              type="button"
+                              onClick={addCustomClassLeadMinute}
+                              className={`px-4 py-2.5 rounded-full text-xs font-extrabold shrink-0 m3-btn ${theme.tonalPill}`}
+                            >
+                              + Add Alert
+                            </button>
+                          </div>
+
+                          <div className={`p-3.5 rounded-2xl space-y-2 ${theme.surfaceElevated}`}>
+                            <span className={`block text-[10px] font-extrabold uppercase tracking-wider ${theme.subtext}`}>
+                              Your Scheduled Alerts Per Class ({(classNotifConfig.leadMinutes || [30]).length}):
+                            </span>
+                            <div className="flex flex-wrap gap-2">
+                              {(classNotifConfig.leadMinutes || [30]).map((mins) => (
+                                <span
+                                  key={mins}
+                                  className={`px-3 py-1 rounded-full text-xs font-extrabold flex items-center gap-1.5 ${theme.tonalPill}`}
+                                >
+                                  <span>{mins} mins before</span>
+                                  {(classNotifConfig.leadMinutes || []).length > 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => removeClassLeadMinute(mins)}
+                                      className="text-rose-500 hover:opacity-80"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </span>
+                              ))}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
+                      )}
+                    </div>
+                  )}
 
                   <div className={`p-5 rounded-[28px] space-y-3 ${theme.glassCard}`}>
                     <div className="flex items-center gap-2">
