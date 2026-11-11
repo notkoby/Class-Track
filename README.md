@@ -4,11 +4,11 @@ Class Track is a simple yet detailed app for Android, Windows, and WearOS to tra
 <img width="480" height="270" alt="Classtrackfinal" src="https://github.com/user-attachments/assets/01415831-37e3-48b0-9431-01670291373e" />
 
 ## Download the latest release:
-Android- [v7.8](https://github.com/notkoby/Class-Track/releases/tag/v7.8)
+Android- [v8.1](https://github.com/notkoby/Class-Track/releases/tag/v8.1)
 
-Windows- [v7.7](https://github.com/notkoby/Class-Track/releases/tag/v7.7)
+Windows- [v8.1](https://github.com/notkoby/Class-Track/releases/tag/v8.1)
 
-WearOS- [v7.0](https://github.com/notkoby/Class-Track/releases/tag/v7)
+WearOS- [v8.0](https://github.com/notkoby/Class-Track/releases/tag/v8)
 
 
 ## Class Track contains all the features you need to manage your schedule:
